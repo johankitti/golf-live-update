@@ -43,7 +43,7 @@ event, its dates, and whether each of your golfers is in the field:
 | Part | Notes | Link |
 |------|-------|------|
 | 64×64 RGB LED matrix, P2, HUB75 | 128×128 mm, 1/32 scan | [Electrokit](https://www.electrokit.com/en/full-color-panel-2mm-rgb-led-matrix-64x64px-128x128mm-p2) |
-| ESP32-S3 mini dev board | 4 MB flash / 2 MB PSRAM, 16 GPIO on headers | [Electrokit](https://www.electrokit.com/esp32-s3-utvecklingskort-mini-4mb-psram-2mb-med-headers) |
+| ESP32-S3 mini dev board | Rebranded [Waveshare ESP32-S3-Zero](https://www.waveshare.com/wiki/ESP32-S3-Zero): S3FH4R2, 4 MB flash / 2 MB PSRAM. Headers expose GPIO 1–13 + 43/44 — the default pin map matches them exactly | [Electrokit](https://www.electrokit.com/esp32-s3-utvecklingskort-mini-4mb-psram-2mb-med-headers) |
 | 5 V power supply, ≥ 4 A | Powers the panel directly — **not** through the dev board | any quality 5 V/4 A PSU |
 | Female–female dupont wires ×16 | Panel usually ships with an IDC data cable + power harness | — |
 

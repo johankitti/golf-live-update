@@ -48,12 +48,14 @@ static const size_t PINNED_GOLFER_COUNT =
 // ---------------------------------------------------------------------------
 // HUB75 pin mapping  (ESP32-S3 GPIO -> HUB75 input connector)
 //
-// Any output-capable GPIO works on the S3; this default map only uses
-// GPIO 1–13 + 43, which are broken out on most S3 mini boards.
-// If your board labels differ, just edit the numbers here.
+// This default map uses GPIO 1–13 + 43: exactly the pins on the headers of
+// the Electrokit ESP32-S3 mini (a rebranded Waveshare ESP32-S3-Zero,
+// https://www.waveshare.com/wiki/ESP32-S3-Zero) — no solder pads needed.
+// Any output-capable GPIO works on the S3; edit the numbers to rewire.
 //
 // AVOID: 0 / 45 / 46 (strapping), 19 / 20 (native USB — used for flashing
-// and serial logs), 26–37 (internal flash / PSRAM on some modules).
+// and serial logs), 26–37 (internal flash / PSRAM on some modules), and on
+// the S3-Zero: 21 (onboard WS2812 RGB LED).
 // GPIO 43 / 44 are UART0 TX/RX but are free to use, since logging goes
 // through native USB (ARDUINO_USB_CDC_ON_BOOT=1 in platformio.ini).
 // ---------------------------------------------------------------------------
