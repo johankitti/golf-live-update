@@ -165,6 +165,10 @@ flowchart LR
   sleep so the panel can't light stray pixels. Disable with `NIGHT_MODE_ENABLED false`.
   Heads-up: US West Coast tournaments run until ~02:00–03:00 Swedish time, so widen
   the window if you want to fall asleep to golf.
+- **Loading state:** until the first data arrives, an animated boot screen (a golf
+  ball rolling toward the pin) shows what the device is doing — `WIFI`, `FETCHING`,
+  `RETRYING`. The animation runs on its own FreeRTOS task, so it keeps moving even
+  while the network code blocks.
 - **Resilience:** failed fetches retry after 30 s while the last good leaderboard stays
   up; the bottom-right dot turns red so you know it's stale. Wi-Fi drops reconnect
   automatically.

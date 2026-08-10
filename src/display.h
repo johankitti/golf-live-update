@@ -14,6 +14,13 @@ void displayMessage(const char* l1, const char* l2 = nullptr,
 // (the board keeps showing the previous data).
 void displayLeaderboard(const Leaderboard& lb, bool fetchOk);
 
+// Animated loading screen (rolling golf ball) with a status line, e.g.
+// "WIFI" / "FETCHING". The animation runs on its own FreeRTOS task, so it
+// keeps moving while the main task blocks on the network. Calling it again
+// just updates the status line. Any full-screen render stops it.
+void displayLoading(const char* status);
+void displayLoadingStop();
+
 // Night mode: blanks the panel and parks/holds the OE line so the matrix
 // stays dark through deep sleep (floating HUB75 inputs light random rows).
 // Safe to call even before displayInit().

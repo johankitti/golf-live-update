@@ -69,7 +69,7 @@ static void connectWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   Serial.printf("[wifi] connecting to %s", WIFI_SSID);
-  displayMessage("GOLF", "LEADERBOARD", "wifi...");
+  displayLoading("WIFI");
   while (WiFi.status() != WL_CONNECTED) {
     delay(250);
     Serial.print(".");
@@ -97,7 +97,7 @@ void setup() {
   }
 
   connectWiFi();
-  displayMessage("GOLF", "LEADERBOARD", "loading...");
+  displayLoading("FETCHING");
 }
 
 void loop() {
@@ -108,7 +108,7 @@ void loop() {
   // Wi-Fi dropped: reconnect quietly, keep showing the last leaderboard.
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[wifi] lost connection, reconnecting");
-    if (!haveData) displayMessage("GOLF", "LEADERBOARD", "wifi...");
+    if (!haveData) displayLoading("WIFI LOST");
     WiFi.disconnect();
     WiFi.reconnect();
     for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
@@ -147,7 +147,7 @@ void loop() {
     if (haveData) {
       displayLeaderboard(board, lastFetchOk);
     } else {
-      displayMessage("GOLF", "LEADERBOARD", "no data yet");
+      displayLoading("RETRYING");  // fetch failed and nothing to show yet
     }
   }
 

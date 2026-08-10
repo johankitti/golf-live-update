@@ -66,6 +66,73 @@ static void drawRow(const GolferRow& row, int baseY, bool pinnedStyle) {
 }
 
 // ---------------------------------------------------------------------------
+// Loading animation: a golf ball rolls along the green toward the flag.
+// Runs on its own task so it survives the main task blocking on TLS reads.
+// The task only touches the ball band (x < 48, three rows above the ground)
+// with stateless fillRect calls — text (shared GFX cursor) stays on the
+// main task, so the two never contend.
+// ---------------------------------------------------------------------------
+
+static const int GROUND_Y   = 44;  // the green
+static const int BALL_MIN_X = 2;
+static const int BALL_MAX_X = 45;  // stops at the lip of the hole
+static const int HOLE_X     = 47;
+static const int FLAG_X     = 50;
+
+static volatile bool animRun = false;
+static TaskHandle_t animTask = nullptr;
+
+static void loadingAnimTask(void*) {
+  int x = BALL_MIN_X;
+  while (animRun) {
+    dma->fillRect(0, GROUND_Y - 3, 48, 3, 0);  // erase ball band only
+    if (x <= BALL_MAX_X) {
+      dma->fillRect(x, GROUND_Y - 2, 2, 2, C_WHITE);
+      x++;
+      vTaskDelay(pdMS_TO_TICKS(45));
+    } else {
+      x = BALL_MIN_X;                 // ball dropped: pause, then tee up again
+      vTaskDelay(pdMS_TO_TICKS(500));
+    }
+  }
+  animTask = nullptr;
+  vTaskDelete(nullptr);
+}
+
+static void drawLoadingScene() {
+  dma->clearScreen();
+  drawText((PANEL_WIDTH - textWidth("GOLF")) / 2, 12, "GOLF", C_YELLOW);
+  drawText((PANEL_WIDTH - textWidth("LEADERBOARD")) / 2, 19, "LEADERBOARD",
+           C_YELLOW);
+
+  uint16_t green = dma->color565(0, 120, 40);
+  dma->drawFastHLine(0, GROUND_Y, PANEL_WIDTH, green);
+  dma->fillRect(HOLE_X, GROUND_Y, 3, 2, 0);                    // the hole
+  dma->drawFastVLine(FLAG_X, GROUND_Y - 14, 14, C_WHITE);      // pin
+  for (int r = 0; r < 4; r++) {                                // flag
+    dma->drawFastHLine(FLAG_X - 4 + r, GROUND_Y - 14 + r, 4 - r, C_RED);
+  }
+}
+
+void displayLoading(const char* status) {
+  if (!dma) return;
+  if (!animRun) {
+    drawLoadingScene();
+    animRun = true;
+    xTaskCreate(loadingAnimTask, "loadanim", 4096, nullptr, 1, &animTask);
+  }
+  // Status line lives below the animation band — safe to draw from here.
+  dma->fillRect(0, 54, PANEL_WIDTH, 10, 0);
+  drawText((PANEL_WIDTH - textWidth(status)) / 2, 61, status, C_GRAY);
+}
+
+void displayLoadingStop() {
+  if (!animRun) return;
+  animRun = false;
+  while (animTask != nullptr) delay(1);  // wait for the task's last frame
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -101,6 +168,7 @@ bool displayInit() {
 
 void displayMessage(const char* l1, const char* l2, const char* l3) {
   if (!dma) return;
+  displayLoadingStop();
   dma->clearScreen();
   const char* lines[3] = {l1, l2, l3};
   const uint16_t colors[3] = {C_YELLOW, C_WHITE, C_GRAY};
@@ -192,7 +260,7 @@ static void renderLive(const Leaderboard& lb) {
 
 void displayLeaderboard(const Leaderboard& lb, bool fetchOk) {
   if (!dma) return;
-
+  displayLoadingStop();
   dma->clearScreen();
   switch (lb.mode) {
     case MODE_LIVE: renderLive(lb); break;
@@ -209,6 +277,7 @@ void displayLeaderboard(const Leaderboard& lb, bool fetchOk) {
 }
 
 void displayPowerOff() {
+  displayLoadingStop();
   if (dma) {
     dma->clearScreen();
     dma->stopDMAoutput();
