@@ -34,6 +34,22 @@ static const size_t PINNED_GOLFER_COUNT =
     sizeof(PINNED_GOLFERS) / sizeof(PINNED_GOLFERS[0]);
 
 // ---------------------------------------------------------------------------
+// Night schedule: power the display down overnight.
+//
+// The whole device deep-sleeps (panel dark, ESP32 at ~µA) and wakes by
+// itself in the morning. Hours are local time in TIMEZONE_POSIX; the window
+// may span midnight (start 23, end 7 = 23:00-07:00). Note that US West
+// Coast tournaments run until ~02:00-03:00 Swedish time.
+// ---------------------------------------------------------------------------
+
+#define NIGHT_MODE_ENABLED true
+#define NIGHT_START_HOUR 1  // display off at 01:00...
+#define NIGHT_END_HOUR   7  // ...back on at 07:00
+
+// POSIX timezone string. Default: Sweden (CET/CEST, DST handled).
+#define TIMEZONE_POSIX "CET-1CEST,M3.5.0,M10.5.0/3"
+
+// ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
 

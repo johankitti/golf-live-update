@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <sys/time.h>
 #include <time.h>
 
 // ---------------------------------------------------------------------------
@@ -101,9 +102,24 @@ static bool matchesAnyPinned(const char* fullName) {
 }
 
 // ---------------------------------------------------------------------------
-// Date helpers. The device clock is never set: "now" comes from the HTTP
-// Date header of each response, so scheduling logic can't drift.
+// Date helpers. "Now" comes from the HTTP Date header of each response;
+// it also sets the system clock, which the night schedule relies on.
+//
+// All parsing converts to epoch WITHOUT mktime(): mktime interprets struct
+// tm in the device's local timezone, and main.cpp sets TZ to Sweden for the
+// night schedule — these timestamps are UTC and must stay that way.
 // ---------------------------------------------------------------------------
+
+// Civil date -> UTC epoch (Howard Hinnant's days-from-civil algorithm).
+static time_t utcEpoch(int y, int m, int d, int hh, int mm, int ss) {
+  y -= m <= 2;
+  int era = (y >= 0 ? y : y - 399) / 400;
+  unsigned yoe = (unsigned)(y - era * 400);
+  unsigned doy = (153u * (unsigned)(m + (m > 2 ? -3 : 9)) + 2u) / 5u + (unsigned)d - 1u;
+  unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+  long days = (long)era * 146097L + (long)doe - 719468L;
+  return (time_t)days * 86400 + hh * 3600 + mm * 60 + ss;
+}
 
 static const char* const MONTHS_UP[12] = {"JAN", "FEB", "MAR", "APR",
                                           "MAY", "JUN", "JUL", "AUG",
@@ -125,14 +141,7 @@ static time_t parseHttpDate(const char* s) {
     return 0;
   int m = monthIndex(mon);
   if (m < 0) return 0;
-  struct tm t = {};
-  t.tm_mday = d;
-  t.tm_mon = m;
-  t.tm_year = y - 1900;
-  t.tm_hour = hh;
-  t.tm_min = mm;
-  t.tm_sec = ss;
-  return mktime(&t);  // device TZ defaults to UTC
+  return utcEpoch(y, m + 1, d, hh, mm, ss);
 }
 
 // "2026-08-13T07:00Z" -> UTC epoch at ~noon that day (day resolution is all
@@ -140,12 +149,7 @@ static time_t parseHttpDate(const char* s) {
 static time_t parseIsoDate(const char* s) {
   int y, m, d;
   if (!s || sscanf(s, "%d-%d-%d", &y, &m, &d) != 3) return 0;
-  struct tm t = {};
-  t.tm_year = y - 1900;
-  t.tm_mon = m - 1;
-  t.tm_mday = d;
-  t.tm_hour = 12;
-  return mktime(&t);
+  return utcEpoch(y, m, d, 12, 0, 0);
 }
 
 // ("2026-08-13...", "2026-08-16...") -> "AUG 13-16"; across a month
@@ -197,7 +201,15 @@ static bool getJson(const char* url, JsonDocument& doc,
     http.end();
     return false;
   }
-  if (nowUtc) *nowUtc = parseHttpDate(http.header("Date").c_str());
+  if (nowUtc) {
+    *nowUtc = parseHttpDate(http.header("Date").c_str());
+    // Keep the system clock in sync — the night schedule depends on it,
+    // and it survives deep sleep on the ESP32's internal RTC.
+    if (*nowUtc > 1700000000) {
+      struct timeval tv = {.tv_sec = *nowUtc, .tv_usec = 0};
+      settimeofday(&tv, nullptr);
+    }
+  }
 
   DeserializationError err =
       deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));

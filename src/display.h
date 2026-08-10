@@ -13,3 +13,11 @@ void displayMessage(const char* l1, const char* l2 = nullptr,
 // bottom-right corner: green = data is fresh, red = last refresh failed
 // (the board keeps showing the previous data).
 void displayLeaderboard(const Leaderboard& lb, bool fetchOk);
+
+// Night mode: blanks the panel and parks/holds the OE line so the matrix
+// stays dark through deep sleep (floating HUB75 inputs light random rows).
+// Safe to call even before displayInit().
+void displayPowerOff();
+
+// Releases the deep-sleep pin holds. Call once at boot, before displayInit().
+void displayReleaseHolds();

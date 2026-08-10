@@ -2,6 +2,7 @@
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <Fonts/TomThumb.h>  // 3x5 font from Adafruit GFX: 16 chars per line
+#include <driver/gpio.h>
 
 static MatrixPanel_I2S_DMA* dma = nullptr;
 
@@ -205,4 +206,24 @@ void displayLeaderboard(const Leaderboard& lb, bool fetchOk) {
   // Status dot, bottom-right: green = fresh data, red = last refresh failed.
   uint16_t dot = fetchOk ? dma->color565(0, 160, 0) : dma->color565(200, 0, 0);
   dma->fillRect(PANEL_WIDTH - 2, PANEL_HEIGHT - 2, 2, 2, dot);
+}
+
+void displayPowerOff() {
+  if (dma) {
+    dma->clearScreen();
+    dma->stopDMAoutput();
+    delay(10);
+  }
+  // With DMA stopped (or never started) the HUB75 inputs float. OE is
+  // active-low: park it high so every row stays disabled, and hold the
+  // level through deep sleep.
+  pinMode(HUB75_OE, OUTPUT);
+  digitalWrite(HUB75_OE, HIGH);
+  gpio_hold_en((gpio_num_t)HUB75_OE);
+  gpio_deep_sleep_hold_en();
+}
+
+void displayReleaseHolds() {
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis((gpio_num_t)HUB75_OE);
 }

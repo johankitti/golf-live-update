@@ -157,8 +157,14 @@ flowchart LR
   (usually Mon–Tue of tournament week). ESPN has no public per-athlete schedule API,
   so field membership is the most truthful "is my golfer playing next week?" signal
   available. Idle refresh slows to 30 min to be polite.
-- **No clock needed:** "what week is it" comes from the HTTP `Date` response header,
-  so there's no NTP dependency.
+- **No clock needed:** time comes from the HTTP `Date` response header,
+  so there's no NTP dependency. It also sets the internal clock for the night schedule.
+- **Night schedule:** between 01:00 and 07:00 (Swedish time — all configurable in
+  `config.h`) the panel blanks and the whole device deep-sleeps at µA levels, waking
+  itself in the morning. The HUB75 output-enable line is parked and held through
+  sleep so the panel can't light stray pixels. Disable with `NIGHT_MODE_ENABLED false`.
+  Heads-up: US West Coast tournaments run until ~02:00–03:00 Swedish time, so widen
+  the window if you want to fall asleep to golf.
 - **Resilience:** failed fetches retry after 30 s while the last good leaderboard stays
   up; the bottom-right dot turns red so you know it's stale. Wi-Fi drops reconnect
   automatically.
