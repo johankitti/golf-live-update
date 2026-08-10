@@ -14,8 +14,11 @@
   "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard"
 
 // How often to refresh, and how quickly to retry after a failed fetch.
-#define UPDATE_INTERVAL_MS (5UL * 60UL * 1000UL)  // 5 minutes
-#define RETRY_INTERVAL_MS  (30UL * 1000UL)        // 30 seconds
+// When no tournament is live the board shows the upcoming event instead,
+// which changes rarely — so it refreshes at the slower idle rate.
+#define UPDATE_INTERVAL_MS      (5UL * 60UL * 1000UL)   // 5 minutes (live)
+#define IDLE_UPDATE_INTERVAL_MS (30UL * 60UL * 1000UL)  // 30 minutes (no event)
+#define RETRY_INTERVAL_MS       (30UL * 1000UL)         // 30 seconds
 
 // How many leaders to show at the top of the board.
 #define LEADER_COUNT 5

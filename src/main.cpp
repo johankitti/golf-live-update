@@ -70,10 +70,17 @@ void loop() {
     lastFetchOk = fetchLeaderboard(board);
     if (lastFetchOk) {
       haveData = true;
-      nextDelayMs = UPDATE_INTERVAL_MS;
-      Serial.printf("[espn] ok: %s (%s), %d leaders, %d pinned\n",
-                    board.eventName, board.roundLabel, board.leaderCount,
-                    board.pinnedCount);
+      // Live golf changes every few minutes; an upcoming-event screen doesn't.
+      nextDelayMs = (board.mode == MODE_LIVE) ? UPDATE_INTERVAL_MS
+                                              : IDLE_UPDATE_INTERVAL_MS;
+      if (board.mode == MODE_LIVE) {
+        Serial.printf("[espn] live: %s (%s), %d leaders, %d pinned\n",
+                      board.eventName, board.roundLabel, board.leaderCount,
+                      board.pinnedCount);
+      } else {
+        Serial.printf("[espn] next up: %s (%s), %d pinned golfers\n",
+                      board.nextName, board.nextDates, board.nextGolferCount);
+      }
     } else {
       nextDelayMs = RETRY_INTERVAL_MS;
       Serial.println("[espn] fetch failed, retrying soon");

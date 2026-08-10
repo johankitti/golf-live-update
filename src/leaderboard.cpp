@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <time.h>
 
 // ---------------------------------------------------------------------------
 // PSRAM allocator for ArduinoJson: the filtered document (~40-80 KB for a
@@ -81,23 +82,135 @@ static void surnameOf(const char* fullName, char* dst, size_t dstSize) {
   toUpperInPlace(dst);
 }
 
-// Case-insensitive substring match against the folded full name, so a
-// config entry "aberg" matches "Ludvig Åberg".
-static bool matchesPinned(const char* fullName) {
-  char folded[48];
+// Case-insensitive substring match of one config pattern against the
+// folded full name, so "aberg" matches "Ludvig Åberg".
+static bool nameMatchesPattern(const char* fullName, const char* pattern) {
+  char folded[48], pat[32];
   asciiFold(fullName, folded, sizeof(folded));
   toUpperInPlace(folded);
+  strlcpy(pat, pattern, sizeof(pat));
+  toUpperInPlace(pat);
+  return strstr(folded, pat) != nullptr;
+}
+
+static bool matchesAnyPinned(const char* fullName) {
   for (size_t i = 0; i < PINNED_GOLFER_COUNT; i++) {
-    char pat[32];
-    strlcpy(pat, PINNED_GOLFERS[i], sizeof(pat));
-    toUpperInPlace(pat);
-    if (strstr(folded, pat)) return true;
+    if (nameMatchesPattern(fullName, PINNED_GOLFERS[i])) return true;
   }
   return false;
 }
 
 // ---------------------------------------------------------------------------
-// Row extraction
+// Date helpers. The device clock is never set: "now" comes from the HTTP
+// Date header of each response, so scheduling logic can't drift.
+// ---------------------------------------------------------------------------
+
+static const char* const MONTHS_UP[12] = {"JAN", "FEB", "MAR", "APR",
+                                          "MAY", "JUN", "JUL", "AUG",
+                                          "SEP", "OCT", "NOV", "DEC"};
+
+static int monthIndex(const char* mon3) {
+  static const char* names = "janfebmaraprmayjunjulaugsepoctnovdec";
+  for (int i = 0; i < 12; i++) {
+    if (strncasecmp(mon3, names + i * 3, 3) == 0) return i;
+  }
+  return -1;
+}
+
+// "Sun, 10 Aug 2026 15:49:37 GMT" -> UTC epoch, 0 on failure.
+static time_t parseHttpDate(const char* s) {
+  char mon[4] = {0};
+  int d, y, hh, mm, ss;
+  if (sscanf(s, "%*3s, %d %3s %d %d:%d:%d", &d, mon, &y, &hh, &mm, &ss) != 6)
+    return 0;
+  int m = monthIndex(mon);
+  if (m < 0) return 0;
+  struct tm t = {};
+  t.tm_mday = d;
+  t.tm_mon = m;
+  t.tm_year = y - 1900;
+  t.tm_hour = hh;
+  t.tm_min = mm;
+  t.tm_sec = ss;
+  return mktime(&t);  // device TZ defaults to UTC
+}
+
+// "2026-08-13T07:00Z" -> UTC epoch at ~noon that day (day resolution is all
+// the calendar logic needs), 0 on failure.
+static time_t parseIsoDate(const char* s) {
+  int y, m, d;
+  if (!s || sscanf(s, "%d-%d-%d", &y, &m, &d) != 3) return 0;
+  struct tm t = {};
+  t.tm_year = y - 1900;
+  t.tm_mon = m - 1;
+  t.tm_mday = d;
+  t.tm_hour = 12;
+  return mktime(&t);
+}
+
+// ("2026-08-13...", "2026-08-16...") -> "AUG 13-16"; across a month
+// boundary -> "AUG 30-SEP 2".
+static void formatDateRange(const char* startIso, const char* endIso,
+                            char* dst, size_t dstSize) {
+  int y1, m1, d1, y2, m2, d2;
+  if (sscanf(startIso, "%d-%d-%d", &y1, &m1, &d1) != 3) {
+    strlcpy(dst, "", dstSize);
+    return;
+  }
+  if (sscanf(endIso, "%d-%d-%d", &y2, &m2, &d2) != 3) {
+    snprintf(dst, dstSize, "%s %d", MONTHS_UP[m1 - 1], d1);
+    return;
+  }
+  if (m1 == m2) {
+    snprintf(dst, dstSize, "%s %d-%d", MONTHS_UP[m1 - 1], d1, d2);
+  } else {
+    snprintf(dst, dstSize, "%s %d-%s %d", MONTHS_UP[m1 - 1], d1,
+             MONTHS_UP[m2 - 1], d2);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP: fetch a URL and filter-parse it. Optionally reports the server's
+// clock (from the Date header) via nowUtc.
+// ---------------------------------------------------------------------------
+
+static bool getJson(const char* url, JsonDocument& doc,
+                    const JsonDocument& filter, time_t* nowUtc) {
+  WiFiClientSecure client;
+  client.setInsecure();  // hobby display: skip cert validation so the board
+                         // keeps working when ESPN rotates certificates
+
+  HTTPClient http;
+  // HTTP/1.0 disables chunked transfer encoding — required so ArduinoJson
+  // can parse the response stream directly.
+  http.useHTTP10(true);
+  http.setTimeout(20000);
+  http.setConnectTimeout(10000);
+  if (!http.begin(client, url)) return false;
+
+  static const char* headerKeys[] = {"Date"};
+  if (nowUtc) http.collectHeaders(headerKeys, 1);
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[espn] HTTP %d\n", code);
+    http.end();
+    return false;
+  }
+  if (nowUtc) *nowUtc = parseHttpDate(http.header("Date").c_str());
+
+  DeserializationError err =
+      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  if (err) {
+    Serial.printf("[espn] JSON error: %s\n", err.c_str());
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// MODE_LIVE: leaderboard rows
 // ---------------------------------------------------------------------------
 
 static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState) {
@@ -141,75 +254,8 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Fetch + parse
-// ---------------------------------------------------------------------------
-
-bool fetchLeaderboard(Leaderboard& out) {
-  WiFiClientSecure client;
-  client.setInsecure();  // hobby display: skip cert validation so the board
-                         // keeps working when ESPN rotates certificates
-
-  HTTPClient http;
-  // HTTP/1.0 disables chunked transfer encoding — required so ArduinoJson
-  // can parse the response stream directly.
-  http.useHTTP10(true);
-  http.setTimeout(20000);
-  http.setConnectTimeout(10000);
-  if (!http.begin(client, ESPN_SCOREBOARD_URL)) return false;
-
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("[espn] HTTP %d\n", code);
-    http.end();
-    return false;
-  }
-
-  // Filter: of the ~1.3 MB response, keep only these fields (~50 KB).
-  JsonDocument filter;
-  JsonObject fEvent = filter["events"].add<JsonObject>();
-  fEvent["shortName"] = true;
-  fEvent["name"] = true;
-  JsonObject fComp = fEvent["competitions"].add<JsonObject>();
-  fComp["status"]["period"] = true;
-  fComp["status"]["type"]["state"] = true;
-  JsonObject fc = fComp["competitors"].add<JsonObject>();
-  fc["order"] = true;
-  fc["score"] = true;
-  fc["athlete"]["displayName"] = true;
-  fc["status"]["thru"] = true;
-  fc["status"]["type"]["state"] = true;
-  fc["status"]["position"]["displayName"] = true;
-
-  SpiRamAllocator allocator;
-  JsonDocument doc(&allocator);
-  DeserializationError err =
-      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
-
-  if (err) {
-    Serial.printf("[espn] JSON error: %s\n", err.c_str());
-    return false;
-  }
-
-  // Pick the event: prefer one that is live right now (there are sometimes
-  // two in the same week), otherwise take the first listed.
-  JsonArrayConst events = doc["events"];
-  JsonObjectConst event;
-  for (JsonObjectConst ev : events) {
-    const char* st = ev["competitions"][0]["status"]["type"]["state"] | "";
-    if (strcmp(st, "in") == 0) { event = ev; break; }
-    if (event.isNull()) event = ev;
-  }
-
-  Leaderboard lb;  // build into a temp so `out` stays intact on failure
-  if (event.isNull()) {
-    lb.hasEvent = false;
-    strlcpy(lb.eventName, "NO PGA EVENT", sizeof(lb.eventName));
-    out = lb;
-    return true;
-  }
-  lb.hasEvent = true;
+static void fillLive(Leaderboard& lb, JsonObjectConst event) {
+  lb.mode = MODE_LIVE;
 
   const char* rawName = event["shortName"] | (const char*)(event["name"] | "PGA TOUR");
   asciiFold(rawName, lb.eventName, sizeof(lb.eventName));
@@ -217,14 +263,8 @@ bool fetchLeaderboard(Leaderboard& out) {
 
   JsonObjectConst comp = event["competitions"][0];
   const char* compState = comp["status"]["type"]["state"] | "in";
-  int period = comp["status"]["period"] | 0;
-  if (strcmp(compState, "post") == 0) {
-    strlcpy(lb.roundLabel, "F", sizeof(lb.roundLabel));
-  } else if (strcmp(compState, "pre") == 0) {
-    strlcpy(lb.roundLabel, "PRE", sizeof(lb.roundLabel));
-  } else {
-    snprintf(lb.roundLabel, sizeof(lb.roundLabel), "R%d", period > 0 ? period : 1);
-  }
+  int period = comp["status"]["period"] | 1;
+  snprintf(lb.roundLabel, sizeof(lb.roundLabel), "R%d", period > 0 ? period : 1);
 
   // Competitors arrive sorted by leaderboard order: the first LEADER_COUNT
   // are the leaders; pinned golfers are picked up wherever they sit.
@@ -235,12 +275,140 @@ bool fetchLeaderboard(Leaderboard& out) {
     if (lb.leaderCount < LEADER_COUNT) {
       fillRow(lb.leaders[lb.leaderCount++], c, compState);
     } else if (lb.pinnedCount < pinnedTarget &&
-               matchesPinned(c["athlete"]["displayName"] | "")) {
+               matchesAnyPinned(c["athlete"]["displayName"] | "")) {
       fillRow(lb.pinned[lb.pinnedCount++], c, compState);
     } else if (lb.leaderCount >= LEADER_COUNT &&
                lb.pinnedCount >= pinnedTarget) {
       break;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MODE_NEXT: upcoming tournament + per-golfer field status.
+//
+// ESPN has no public "athlete schedule" API, so "which event does golfer X
+// play next" is answered as: is X in the field of the tour's next event?
+// The field is usually published Mon/Tue of tournament week — until then
+// every pinned golfer shows TBD.
+// ---------------------------------------------------------------------------
+
+static void fillNext(Leaderboard& lb, const JsonDocument& doc, time_t now,
+                     ArduinoJson::Allocator* allocator) {
+  lb.mode = MODE_NEXT;
+
+  // The scoreboard's Date header should always parse; if it somehow didn't,
+  // approximate "now" with the currently listed event's date.
+  if (now == 0) now = parseIsoDate(doc["events"][0]["date"] | "");
+
+  // First calendar entry that hasn't finished yet is the next (or current,
+  // pre-round) tournament.
+  const char* startIso = nullptr;
+  for (JsonObjectConst c : doc["leagues"][0]["calendar"].as<JsonArrayConst>()) {
+    time_t end = parseIsoDate(c["endDate"] | "");
+    if (end == 0 || end + 86400 <= now) continue;
+    asciiFold(c["label"] | "PGA TOUR", lb.nextName, sizeof(lb.nextName));
+    toUpperInPlace(lb.nextName);
+    startIso = c["startDate"] | "";
+    formatDateRange(startIso, c["endDate"] | "", lb.nextDates,
+                    sizeof(lb.nextDates));
+    break;
+  }
+  if (!startIso || !*startIso) {
+    lb.mode = MODE_NONE;  // calendar exhausted: season is over
+    return;
+  }
+
+  // Pinned golfers start as TBD, named after their config pattern.
+  lb.nextGolferCount = min((size_t)MAX_PINNED_ROWS, PINNED_GOLFER_COUNT);
+  for (uint8_t i = 0; i < lb.nextGolferCount; i++) {
+    strlcpy(lb.nextGolfers[i].name, PINNED_GOLFERS[i],
+            sizeof(lb.nextGolfers[i].name));
+    toUpperInPlace(lb.nextGolfers[i].name);
+    strlcpy(lb.nextGolfers[i].status, "TBD", sizeof(lb.nextGolfers[i].status));
+  }
+  if (lb.nextGolferCount == 0) return;
+
+  // Ask the scoreboard for the next event's start date — once entries are
+  // published its competitor list is the tournament field.
+  int y, m, d;
+  if (sscanf(startIso, "%d-%d-%d", &y, &m, &d) != 3) return;
+  char url[160];
+  snprintf(url, sizeof(url), "%s?dates=%04d%02d%02d", ESPN_SCOREBOARD_URL, y, m, d);
+
+  JsonDocument filter;
+  JsonObject fEvent = filter["events"].add<JsonObject>();
+  JsonObject fc = fEvent["competitions"].add<JsonObject>()["competitors"]
+                      .add<JsonObject>();
+  fc["athlete"]["displayName"] = true;
+
+  JsonDocument fieldDoc(allocator);
+  if (!getJson(url, fieldDoc, filter, nullptr)) return;  // stay TBD
+
+  JsonArrayConst field =
+      fieldDoc["events"][0]["competitions"][0]["competitors"].as<JsonArrayConst>();
+  if (field.size() == 0) return;  // field not published yet: stay TBD
+
+  for (uint8_t i = 0; i < lb.nextGolferCount; i++) {
+    strlcpy(lb.nextGolfers[i].status, "OUT", sizeof(lb.nextGolfers[i].status));
+    for (JsonObjectConst c : field) {
+      const char* fullName = c["athlete"]["displayName"] | "";
+      if (nameMatchesPattern(fullName, PINNED_GOLFERS[i])) {
+        surnameOf(fullName, lb.nextGolfers[i].name, sizeof(lb.nextGolfers[i].name));
+        strlcpy(lb.nextGolfers[i].status, "IN", sizeof(lb.nextGolfers[i].status));
+        break;
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+bool fetchLeaderboard(Leaderboard& out) {
+  // Filter: of the ~1.3 MB response, keep only these fields (~50 KB).
+  JsonDocument filter;
+  JsonObject fEvent = filter["events"].add<JsonObject>();
+  fEvent["shortName"] = true;
+  fEvent["name"] = true;
+  fEvent["date"] = true;
+  JsonObject fComp = fEvent["competitions"].add<JsonObject>();
+  fComp["status"]["period"] = true;
+  fComp["status"]["type"]["state"] = true;
+  JsonObject fc = fComp["competitors"].add<JsonObject>();
+  fc["order"] = true;
+  fc["score"] = true;
+  fc["athlete"]["displayName"] = true;
+  fc["status"]["thru"] = true;
+  fc["status"]["type"]["state"] = true;
+  fc["status"]["position"]["displayName"] = true;
+  // Season calendar, for the "next tournament" screen.
+  JsonObject fCal = filter["leagues"].add<JsonObject>()["calendar"].add<JsonObject>();
+  fCal["label"] = true;
+  fCal["startDate"] = true;
+  fCal["endDate"] = true;
+
+  SpiRamAllocator allocator;
+  JsonDocument doc(&allocator);
+  time_t now = 0;
+  if (!getJson(ESPN_SCOREBOARD_URL, doc, filter, &now)) return false;
+
+  // A tournament round in progress wins; otherwise show what's next.
+  JsonObjectConst liveEvent;
+  for (JsonObjectConst ev : doc["events"].as<JsonArrayConst>()) {
+    const char* st = ev["competitions"][0]["status"]["type"]["state"] | "";
+    if (strcmp(st, "in") == 0) {
+      liveEvent = ev;
+      break;
+    }
+  }
+
+  Leaderboard lb;  // build into a temp so `out` stays intact on failure
+  if (!liveEvent.isNull()) {
+    fillLive(lb, liveEvent);
+  } else {
+    fillNext(lb, doc, now, &allocator);
   }
 
   out = lb;

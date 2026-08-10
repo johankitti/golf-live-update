@@ -19,6 +19,23 @@ refreshed straight from ESPN every 5 minutes. No backend, no API key, no subscri
 └────────────────────┘  ● status dot: green = fresh
 ```
 
+Between tournaments the board flips to a **"next up" screen** — the upcoming
+event, its dates, and whether each of your golfers is in the field:
+
+```
+┌────────────────────┐
+│ NEXT UP            │
+│ ────────────────── │
+│ FEDEX ST. JUDE     │
+│ CHAMPIONSHIP       │
+│ AUG 13-16          │
+│ ────────────────── │
+│ ABERG           IN │  ← green: confirmed in the field
+│ NOREN          OUT │  ← orange: not entered
+│ SCHEFFLER      TBD │  ← gray: field not published yet
+└────────────────────┘
+```
+
 ---
 
 ## 🛒 Bill of materials
@@ -134,9 +151,17 @@ flowchart LR
   [Adafruit GFX](https://github.com/adafruit/Adafruit-GFX-Library) draws the text.
 - **Names on a tiny font:** the LED font is ASCII-only, so names are accent-folded
   (`Åberg → ABERG`) before rendering.
+- **Between tournaments:** the season calendar (embedded in the same API response)
+  gives the next event and its dates. Each pinned golfer is then looked up in that
+  event's published field → `IN` / `OUT`, or `TBD` until ESPN publishes entries
+  (usually Mon–Tue of tournament week). ESPN has no public per-athlete schedule API,
+  so field membership is the most truthful "is my golfer playing next week?" signal
+  available. Idle refresh slows to 30 min to be polite.
+- **No clock needed:** "what week is it" comes from the HTTP `Date` response header,
+  so there's no NTP dependency.
 - **Resilience:** failed fetches retry after 30 s while the last good leaderboard stays
   up; the bottom-right dot turns red so you know it's stale. Wi-Fi drops reconnect
-  automatically. Off weeks show a friendly "OFF WEEK" screen.
+  automatically.
 
 ---
 
