@@ -1,0 +1,9 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Wi-Fi credentials — never commit these
+include/secrets.h
+
+# macOS
+.DS_Store
