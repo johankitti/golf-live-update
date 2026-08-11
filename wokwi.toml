@@ -1,0 +1,7 @@
+# Wokwi simulator config — https://docs.wokwi.com/vscode/project-config
+# Build first with:  pio run -e wokwi
+
+[wokwi]
+version = 1
+firmware = ".pio/build/wokwi/firmware.bin"
+elf = ".pio/build/wokwi/firmware.elf"

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "author": "golf-live-update",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-devkit-c-v4",
+      "id": "esp",
+      "top": 220,
+      "left": 120,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-hub75-matrix",
+      "id": "matrix",
+      "top": -160,
+      "left": -90,
+      "attrs": { "rows": "64", "cols": "64", "pixelate": "1" }
+    }
+  ],
+  "connections": [
+    ["esp:TX", "$serialMonitor:RX", "", []],
+    ["esp:RX", "$serialMonitor:TX", "", []],
+    ["esp:25", "matrix:R1", "red", []],
+    ["esp:26", "matrix:G1", "green", []],
+    ["esp:27", "matrix:B1", "blue", []],
+    ["esp:14", "matrix:R2", "red", []],
+    ["esp:12", "matrix:G2", "green", []],
+    ["esp:13", "matrix:B2", "blue", []],
+    ["esp:23", "matrix:A", "gray", []],
+    ["esp:19", "matrix:B", "gray", []],
+    ["esp:5", "matrix:C", "gray", []],
+    ["esp:17", "matrix:D", "gray", []],
+    ["esp:32", "matrix:E", "gray", []],
+    ["esp:16", "matrix:CLK", "yellow", []],
+    ["esp:4", "matrix:LAT", "orange", []],
+    ["esp:15", "matrix:OE", "purple", []],
+    ["esp:GND.1", "matrix:GND", "black", []]
+  ]
+}

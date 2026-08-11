@@ -131,6 +131,31 @@ every 5 minutes (configurable via `UPDATE_INTERVAL_MS`).
 
 ---
 
+## 🖥️ Try it without hardware
+
+The whole project runs in the [Wokwi](https://wokwi.com) browser simulator — virtual
+panel, virtual ESP32, and *real* internet: it fetches the actual live leaderboard
+through Wokwi's simulated Wi-Fi (`Wokwi-GUEST`, baked into the `wokwi` build env).
+
+```bash
+pio run -e wokwi        # build the simulator firmware
+```
+
+Then either:
+
+- **VS Code:** install the [Wokwi extension](https://marketplace.visualstudio.com/items?itemName=wokwi.wokwi-vscode),
+  sign in (free), open this repo and run **"Wokwi: Start Simulator"** — it picks up
+  `wokwi.toml` and `diagram.json` automatically.
+- **Browser:** create a project at [wokwi.com](https://wokwi.com), paste in
+  `diagram.json`, and upload the firmware.
+
+Notes: the simulator uses a classic ESP32 devkit (Wokwi's HUB75 emulation is proven
+on it) with its own pin map, selected automatically by the `WOKWI` build flag.
+Simulated TLS is slow — the 1.3 MB ESPN download takes a while, which is your
+chance to admire the loading animation.
+
+---
+
 ## ⚙️ How it works
 
 ```mermaid

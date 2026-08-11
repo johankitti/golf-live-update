@@ -76,6 +76,26 @@ static const size_t PINNED_GOLFER_COUNT =
 // through native USB (ARDUINO_USB_CDC_ON_BOOT=1 in platformio.ini).
 // ---------------------------------------------------------------------------
 
+#ifdef WOKWI
+// Wokwi simulator build (classic ESP32 devkit — the board whose HUB75
+// emulation is proven). GPIO 1-13 collide with UART0/flash on that chip,
+// so the simulator uses the pin map from Wokwi's own HUB75 examples.
+// diagram.json mirrors this mapping.
+#define HUB75_R1  25
+#define HUB75_G1  26
+#define HUB75_B1  27
+#define HUB75_R2  14
+#define HUB75_G2  12
+#define HUB75_B2  13
+#define HUB75_A   23
+#define HUB75_B   19
+#define HUB75_C   5
+#define HUB75_D   17
+#define HUB75_E   32
+#define HUB75_CLK 16
+#define HUB75_LAT 4
+#define HUB75_OE  15
+#else
 #define HUB75_R1  1   // red,   top half
 #define HUB75_G1  2   // green, top half
 #define HUB75_B1  3   // blue,  top half
@@ -90,3 +110,4 @@ static const size_t PINNED_GOLFER_COUNT =
 #define HUB75_CLK 12
 #define HUB75_LAT 13
 #define HUB75_OE  43
+#endif
