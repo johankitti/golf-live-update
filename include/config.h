@@ -29,9 +29,22 @@
 // A pinned golfer already in the top 5 is not shown twice.
 static const char* const PINNED_GOLFERS[] = {
     "Aberg",
+    "Noren",   // matches "Alex Norén" (accents folded: é -> e)
 };
 static const size_t PINNED_GOLFER_COUNT =
     sizeof(PINNED_GOLFERS) / sizeof(PINNED_GOLFERS[0]);
+
+// ---------------------------------------------------------------------------
+// Wi-Fi setup portal
+// ---------------------------------------------------------------------------
+
+// On first boot (or when no saved network connects) the device starts its own
+// Wi-Fi access point with this name and serves a captive-portal page to pick a
+// network and enter the password. Credentials are stored on the device, so the
+// real board needs no secrets.h. Tap the onboard BOOT button within ~3 s of
+// power-on to re-open the portal and switch networks. (The Wokwi simulator
+// skips all this and connects straight to Wokwi-GUEST.)
+#define WIFI_SETUP_AP_NAME "GolfBoard-setup"
 
 // ---------------------------------------------------------------------------
 // Night schedule: power the display down overnight.
@@ -59,14 +72,20 @@ static const size_t PINNED_GOLFER_COUNT =
 
 // 0–255. P2 panels are BRIGHT — 255 at ~30 cm is uncomfortable, and drives
 // the power draw toward the panel's 4 A max. 60–120 is plenty indoors.
-#define PANEL_BRIGHTNESS 90
+#define PANEL_BRIGHTNESS 20   // low for USB-powered bench testing; raise to ~90 on the external supply
+
+// Onboard WS2812 RGB LED (Waveshare S3-Zero, GPIO21). Unused by this project;
+// blanked at boot so it doesn't glow a stray color.
+#define ONBOARD_RGB_LED_PIN 21
 
 // ---------------------------------------------------------------------------
 // HUB75 pin mapping  (ESP32-S3 GPIO -> HUB75 input connector)
 //
-// This default map uses GPIO 1–13 + 43: exactly the pins on the headers of
-// the Electrokit ESP32-S3 mini (a rebranded Waveshare ESP32-S3-Zero,
-// https://www.waveshare.com/wiki/ESP32-S3-Zero) — no solder pads needed.
+// This default map uses GPIO 1–13 + 43: exactly the pins on the two side
+// header rows of the Waveshare ESP32-S3-Zero (verified against its pinout,
+// docs/esp32-s3-zero-pinout.png). GPIO 43 is the pad silkscreened "TX" at the
+// top of the right column. Left column = 5V,GND,3V3,GP1..GP6; right column =
+// TX(43),RX(44),GP13..GP7. GPIO 14 sits on the bottom edge, so it is avoided.
 // Any output-capable GPIO works on the S3; edit the numbers to rewire.
 //
 // AVOID: 0 / 45 / 46 (strapping), 19 / 20 (native USB — used for flashing
@@ -109,5 +128,5 @@ static const size_t PINNED_GOLFER_COUNT =
 #define HUB75_E   11
 #define HUB75_CLK 12
 #define HUB75_LAT 13
-#define HUB75_OE  43
+#define HUB75_OE  43   // the "TX" pad, top of the right column
 #endif

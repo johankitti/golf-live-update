@@ -5,6 +5,9 @@
 // Initialises the HUB75 panel driver. Returns false if DMA setup fails.
 bool displayInit();
 
+// Sets panel brightness (0-255) live, e.g. from the web settings page.
+void displaySetBrightness(uint8_t b);
+
 // Full-screen status message (boot, Wi-Fi, errors). Up to 3 centered lines.
 void displayMessage(const char* l1, const char* l2 = nullptr,
                     const char* l3 = nullptr);
