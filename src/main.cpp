@@ -15,12 +15,19 @@
 #include "secrets.h"
 #include "display.h"
 #include "leaderboard.h"
+#include "settings.h"
+
+#ifndef WOKWI
+#include <WiFiManager.h>   // captive-portal Wi-Fi setup on the real board
+#include "webconfig.h"     // settings web page (golfboard.local)
+#endif
 
 static Leaderboard board;
 static bool haveData = false;      // ever fetched successfully?
 static bool lastFetchOk = false;
 static uint32_t lastAttemptMs = 0;
 static uint32_t nextDelayMs = 0;   // 0 = fetch immediately
+static volatile bool refreshRequested = false;  // set by the web "Refresh now" button
 
 // ---------------------------------------------------------------------------
 // Night schedule. The system clock is set from the HTTP Date header of each
@@ -31,21 +38,22 @@ static uint32_t nextDelayMs = 0;   // 0 = fetch immediately
 static bool clockValid() { return time(nullptr) > 1700000000; }
 
 static bool isNight() {
-  if (!NIGHT_MODE_ENABLED || !clockValid()) return false;
+  if (!settings.nightEnabled || !clockValid()) return false;
   time_t now = time(nullptr);
   struct tm lt;
   localtime_r(&now, &lt);
-  if (NIGHT_START_HOUR < NIGHT_END_HOUR) {
-    return lt.tm_hour >= NIGHT_START_HOUR && lt.tm_hour < NIGHT_END_HOUR;
+  if (settings.nightStart < settings.nightEnd) {
+    return lt.tm_hour >= settings.nightStart && lt.tm_hour < settings.nightEnd;
   }
-  return lt.tm_hour >= NIGHT_START_HOUR || lt.tm_hour < NIGHT_END_HOUR;  // spans midnight
+  return lt.tm_hour >= settings.nightStart ||
+         lt.tm_hour < settings.nightEnd;  // spans midnight
 }
 
 static void sleepUntilMorning() {
   time_t now = time(nullptr);
   struct tm morning;
   localtime_r(&now, &morning);
-  morning.tm_hour = NIGHT_END_HOUR;
+  morning.tm_hour = settings.nightEnd;
   morning.tm_min = 0;
   morning.tm_sec = 0;
   morning.tm_isdst = -1;             // let mktime resolve DST
@@ -63,9 +71,44 @@ static void sleepUntilMorning() {
   esp_deep_sleep_start();  // wakes via reset into setup()
 }
 
+#ifndef WOKWI
+// --- Real board: WiFiManager captive-portal setup -------------------------
+
+// Shown on the panel when the setup access point comes up, so Wi-Fi can be
+// configured with just a phone — no serial console needed.
+static void onEnterSetupPortal(WiFiManager* /*wm*/) {
+  Serial.printf("[wifi] setup AP '%s' up — browse to http://%s\n",
+                WIFI_SETUP_AP_NAME, WiFi.softAPIP().toString().c_str());
+  displayMessage("WIFI SETUP", "JOIN WIFI", WIFI_SETUP_AP_NAME);
+}
+
 static void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // modem sleep hurts TLS reliability
+
+  WiFiManager wm;
+  wm.setDebugOutput(false);
+  wm.setAPCallback(onEnterSetupPortal);
+  wm.setConfigPortalTimeout(0);  // keep the portal open until configured
+
+  // Connects to the saved network, or opens the setup portal if there is none
+  // or it can't connect. Networks are changed from the web page's "Reconfigure
+  // Wi-Fi" button, so a boxed unit needs no physical controls.
+  displayLoading("WIFI");
+  if (!wm.autoConnect(WIFI_SETUP_AP_NAME)) {
+    Serial.println("[wifi] setup failed/timed out — restarting");
+    delay(1000);
+    ESP.restart();
+  }
+  Serial.printf("[wifi] connected, IP %s\n", WiFi.localIP().toString().c_str());
+}
+
+#else
+// --- Wokwi simulator: no phone for a portal, use build-flag creds ----------
+
+static void connectWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   Serial.printf("[wifi] connecting to %s", WIFI_SSID);
@@ -76,9 +119,16 @@ static void connectWiFi() {
   }
   Serial.printf("\n[wifi] connected, IP %s\n", WiFi.localIP().toString().c_str());
 }
+#endif
 
 void setup() {
   Serial.begin(115200);
+
+#ifndef WOKWI
+  neopixelWrite(ONBOARD_RGB_LED_PIN, 0, 0, 0);  // blank the unused onboard WS2812
+#endif
+
+  settingsLoad();
 
   setenv("TZ", TIMEZONE_POSIX, 1);
   tzset();
@@ -97,10 +147,21 @@ void setup() {
   }
 
   connectWiFi();
+#ifndef WOKWI
+  webconfigBegin(&board, &refreshRequested);
+#endif
   displayLoading("FETCHING");
 }
 
 void loop() {
+#ifndef WOKWI
+  webconfigLoop();  // service the settings web page
+#endif
+  if (refreshRequested) {  // web "Refresh now": force an immediate fetch
+    refreshRequested = false;
+    nextDelayMs = 0;
+  }
+
   // The clock ticked into the night window (or the first fetch of a late
   // cold boot just made the clock valid): power down until morning.
   if (isNight()) sleepUntilMorning();

@@ -105,9 +105,13 @@ All pins are configurable in [`include/config.h`](include/config.h).
    ```bash
    git clone git@github.com:johankitti/golf-live-update.git
    cd golf-live-update
-   cp include/secrets.h.example include/secrets.h
-   # edit include/secrets.h with your Wi-Fi credentials
+   cp include/secrets.h.example include/secrets.h   # needed to compile; no edit required
    ```
+
+   > **Wi-Fi is configured on the device, not here.** On first boot the board
+   > starts a setup hotspot — see [First-boot Wi-Fi setup](#-first-boot-wi-fi-setup)
+   > below. `secrets.h` still has to exist for the build, but its placeholder
+   > values are only used by the Wokwi simulator.
 
 3. **Pick your golfers** in [`include/config.h`](include/config.h):
 
@@ -128,6 +132,25 @@ All pins are configurable in [`include/config.h`](include/config.h).
 
 That's it. The board connects to Wi-Fi, pulls the leaderboard, and refreshes
 every 5 minutes (configurable via `UPDATE_INTERVAL_MS`).
+
+---
+
+## 📶 First-boot Wi-Fi setup
+
+No credentials are compiled in — you set the network with your phone:
+
+1. On a fresh board the panel shows **`SETUP? / TAP BOOT`** for ~3 seconds, then
+   (if no network is saved) starts a Wi-Fi hotspot called **`GolfBoard-setup`**.
+   The panel shows **`WIFI SETUP / JOIN WIFI / GolfBoard-setup`**.
+2. Join that hotspot on your phone — a captive-portal page opens automatically.
+   Pick your Wi-Fi network, enter the password, save.
+3. The board stores the credentials on-device (survives reflashing the app) and
+   reconnects on its own. No `secrets.h` edit, no rebuild.
+
+**To change networks later:** power-cycle the board and **tap the onboard `BOOT`
+button** while it shows `SETUP? / TAP BOOT` — that re-opens the hotspot even if a
+network is already saved. The hotspot name is `WIFI_SETUP_AP_NAME` in
+[`include/config.h`](include/config.h).
 
 ---
 

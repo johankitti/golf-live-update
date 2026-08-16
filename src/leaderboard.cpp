@@ -1,4 +1,5 @@
 #include "leaderboard.h"
+#include "settings.h"
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -95,8 +96,8 @@ static bool nameMatchesPattern(const char* fullName, const char* pattern) {
 }
 
 static bool matchesAnyPinned(const char* fullName) {
-  for (size_t i = 0; i < PINNED_GOLFER_COUNT; i++) {
-    if (nameMatchesPattern(fullName, PINNED_GOLFERS[i])) return true;
+  for (uint8_t i = 0; i < settings.pinnedCount; i++) {
+    if (nameMatchesPattern(fullName, settings.pinned[i])) return true;
   }
   return false;
 }
@@ -211,9 +212,41 @@ static bool getJson(const char* url, JsonDocument& doc,
     }
   }
 
-  DeserializationError err =
-      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  // Buffer the whole (~0.5 MB) body into PSRAM, then parse from RAM. Parsing
+  // straight off the TLS stream is unreliable at this size: a slow filtered
+  // parse lets the connection drop mid-body (JSON error: IncompleteInput). A
+  // tight read loop can't be outrun by the parser.
+  WiFiClient* stream = http.getStreamPtr();
+  size_t cap = 128 * 1024, len = 0;
+  char* body = (char*)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+  if (!body) { http.end(); return false; }
+  uint32_t lastRx = millis();
+  while (http.connected() || stream->available()) {
+    size_t avail = stream->available();
+    if (avail) {
+      if (len + avail > cap) {
+        while (len + avail > cap) cap += 128 * 1024;
+        char* nb = (char*)heap_caps_realloc(body, cap, MALLOC_CAP_SPIRAM);
+        if (!nb) { heap_caps_free(body); http.end(); return false; }
+        body = nb;
+      }
+      len += stream->readBytes(body + len, avail);
+      lastRx = millis();
+    } else if (millis() - lastRx > 20000) {
+      break;  // stalled: give up, retry later
+    } else {
+      delay(2);
+    }
+  }
   http.end();
+
+  // ESPN nests deeper than ArduinoJson's default limit of 10 (events >
+  // competitions > competitors > ...); raise the ceiling (costs stack only for
+  // the actual depth, ~15).
+  DeserializationError err =
+      deserializeJson(doc, body, len, DeserializationOption::Filter(filter),
+                      DeserializationOption::NestingLimit(30));
+  heap_caps_free(body);
   if (err) {
     Serial.printf("[espn] JSON error: %s\n", err.c_str());
     return false;
@@ -225,7 +258,8 @@ static bool getJson(const char* url, JsonDocument& doc,
 // MODE_LIVE: leaderboard rows
 // ---------------------------------------------------------------------------
 
-static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState) {
+static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
+                    int period) {
   // Position: live events carry "T5"-style strings; finished events don't,
   // so fall back to the competitor's sort order.
   const char* posDisp = c["status"]["position"]["displayName"];
@@ -237,8 +271,8 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState) {
 
   surnameOf(c["athlete"]["displayName"] | "?", row.name, sizeof(row.name));
 
-  // Score to par: ESPN sends a display string ("-14", "E") but be defensive
-  // about it arriving as a number.
+  // Total score to par: ESPN sends a display string ("-14", "E") but be
+  // defensive about it arriving as a number.
   JsonVariantConst sv = c["score"];
   if (sv.is<const char*>()) {
     strlcpy(row.score, sv.as<const char*>(), sizeof(row.score));
@@ -250,19 +284,22 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState) {
     strlcpy(row.score, "-", sizeof(row.score));
   }
 
-  // Holes played this round.
-  if (strcmp(compState, "post") == 0) {
-    strlcpy(row.thru, "F", sizeof(row.thru));
-  } else {
-    int thru = c["status"]["thru"] | 0;
-    const char* pState = c["status"]["type"]["state"] | "";
-    if (thru >= 18 || strcmp(pState, "post") == 0) {
+  // This round's score to par + holes played come from the current round's
+  // linescore. competitor.status is null on this feed, so the per-hole array
+  // length is the reliable "thru".
+  strlcpy(row.today, "-", sizeof(row.today));
+  strlcpy(row.thru, "-", sizeof(row.thru));
+  for (JsonObjectConst ls : c["linescores"].as<JsonArrayConst>()) {
+    if ((int)(ls["period"] | 0) != period) continue;
+    const char* tv = ls["displayValue"];
+    if (tv && *tv) strlcpy(row.today, tv, sizeof(row.today));
+    int holes = ls["linescores"].as<JsonArrayConst>().size();
+    if (strcmp(compState, "post") == 0 || holes >= 18) {
       strlcpy(row.thru, "F", sizeof(row.thru));
-    } else if (thru > 0) {
-      snprintf(row.thru, sizeof(row.thru), "%d", thru);
-    } else {
-      strlcpy(row.thru, "-", sizeof(row.thru));
+    } else if (holes > 0) {
+      snprintf(row.thru, sizeof(row.thru), "%d", holes);
     }
+    break;
   }
 }
 
@@ -282,13 +319,13 @@ static void fillLive(Leaderboard& lb, JsonObjectConst event) {
   // are the leaders; pinned golfers are picked up wherever they sit.
   // A pinned golfer inside the top 5 is already visible and is not duplicated.
   const uint8_t pinnedTarget =
-      min((size_t)MAX_PINNED_ROWS, PINNED_GOLFER_COUNT);
+      min((size_t)MAX_PINNED_ROWS, (size_t)settings.pinnedCount);
   for (JsonObjectConst c : comp["competitors"].as<JsonArrayConst>()) {
     if (lb.leaderCount < LEADER_COUNT) {
-      fillRow(lb.leaders[lb.leaderCount++], c, compState);
+      fillRow(lb.leaders[lb.leaderCount++], c, compState, period);
     } else if (lb.pinnedCount < pinnedTarget &&
                matchesAnyPinned(c["athlete"]["displayName"] | "")) {
-      fillRow(lb.pinned[lb.pinnedCount++], c, compState);
+      fillRow(lb.pinned[lb.pinnedCount++], c, compState, period);
     } else if (lb.leaderCount >= LEADER_COUNT &&
                lb.pinnedCount >= pinnedTarget) {
       break;
@@ -332,9 +369,9 @@ static void fillNext(Leaderboard& lb, const JsonDocument& doc, time_t now,
   }
 
   // Pinned golfers start as TBD, named after their config pattern.
-  lb.nextGolferCount = min((size_t)MAX_PINNED_ROWS, PINNED_GOLFER_COUNT);
+  lb.nextGolferCount = min((size_t)MAX_PINNED_ROWS, (size_t)settings.pinnedCount);
   for (uint8_t i = 0; i < lb.nextGolferCount; i++) {
-    strlcpy(lb.nextGolfers[i].name, PINNED_GOLFERS[i],
+    strlcpy(lb.nextGolfers[i].name, settings.pinned[i],
             sizeof(lb.nextGolfers[i].name));
     toUpperInPlace(lb.nextGolfers[i].name);
     strlcpy(lb.nextGolfers[i].status, "TBD", sizeof(lb.nextGolfers[i].status));
@@ -365,7 +402,7 @@ static void fillNext(Leaderboard& lb, const JsonDocument& doc, time_t now,
     strlcpy(lb.nextGolfers[i].status, "OUT", sizeof(lb.nextGolfers[i].status));
     for (JsonObjectConst c : field) {
       const char* fullName = c["athlete"]["displayName"] | "";
-      if (nameMatchesPattern(fullName, PINNED_GOLFERS[i])) {
+      if (nameMatchesPattern(fullName, settings.pinned[i])) {
         surnameOf(fullName, lb.nextGolfers[i].name, sizeof(lb.nextGolfers[i].name));
         strlcpy(lb.nextGolfers[i].status, "IN", sizeof(lb.nextGolfers[i].status));
         break;
@@ -395,6 +432,14 @@ bool fetchLeaderboard(Leaderboard& out) {
   fc["status"]["thru"] = true;
   fc["status"]["type"]["state"] = true;
   fc["status"]["position"]["displayName"] = true;
+  // Per-round linescores: today's score to par (displayValue), and holes
+  // played via the nested per-hole array (competitor.status is null on this
+  // feed, so the array length is the only reliable "thru"). The whole body is
+  // buffered before parsing (see getJson), so this heavier parse is safe.
+  JsonObject fLine = fc["linescores"].add<JsonObject>();
+  fLine["period"] = true;
+  fLine["displayValue"] = true;
+  fLine["linescores"].add<JsonObject>()["period"] = true;  // per-hole, for counting thru
   // Season calendar, for the "next tournament" screen.
   JsonObject fCal = filter["leagues"].add<JsonObject>()["calendar"].add<JsonObject>();
   fCal["label"] = true;

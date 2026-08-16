@@ -15,8 +15,9 @@ enum BoardMode : uint8_t {
 struct GolferRow {
   char pos[5];    // "1", "T12", "-"
   char name[10];  // surname, ASCII-folded + uppercased, e.g. "ABERG"
-  char score[6];  // "-14", "+2", "E"
-  char thru[4];   // holes played: "12", "F" (finished), "-" (not started)
+  char today[6];  // this round's score to par: "-2", "+1", "E"
+  char score[6];  // total to par: "-14", "+2", "E"
+  char thru[4];   // holes played this round: "12", "F" (finished), "-" (not started)
 };
 
 // Pinned golfer's status for the upcoming event.

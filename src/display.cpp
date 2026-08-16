@@ -1,4 +1,5 @@
 #include "display.h"
+#include "settings.h"
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <Fonts/TomThumb.h>  // 3x5 font from Adafruit GFX: 16 chars per line
@@ -10,16 +11,17 @@ static MatrixPanel_I2S_DMA* dma = nullptr;
 // Layout constants (pixel coordinates; text y values are font baselines).
 // TomThumb advances 4 px per character, so a 64 px row fits 16 characters.
 // ---------------------------------------------------------------------------
-static const int HEADER_BASE   = 5;
-static const int HEADER_RULE_Y = 7;
-static const int LEADER_BASE0  = 14;  // first leader row baseline
+static const int PAD           = 1;   // 1px margin around all content
+static const int HEADER_BASE   = 6;   // baselines shifted +1 vs. edge for 1px top padding
+static const int HEADER_RULE_Y = 8;
+static const int LEADER_BASE0  = 15;  // first leader row baseline
 static const int ROW_PITCH     = 6;
-static const int PINNED_RULE_Y = 42;
-static const int PINNED_BASE0  = 48;
-static const int POS_X         = 0;
-static const int NAME_X        = 13;
-static const int SCORE_RIGHT   = 54;  // right edge of the score column
-static const int THRU_RIGHT    = 63;  // right edge of the thru column
+static const int PINNED_RULE_Y = 43;
+static const int PINNED_BASE0  = 50;  // 2px gap below the divider, matching the header rule
+static const int NAME_GAP      = 2;   // gap between the left-aligned rank and the name
+static const int TODAY_RIGHT   = 41;  // this round's score, right edge
+static const int TOTAL_RIGHT   = 53;  // total score, right edge
+static const int THRU_RIGHT    = 62;  // holes played (thru), rightmost; also "NEXT UP" status
 
 // Colors (initialised in displayInit, after the driver exists)
 static uint16_t C_WHITE, C_GRAY, C_DIM, C_YELLOW, C_RED, C_GREEN, C_CYAN,
@@ -44,25 +46,30 @@ static void drawTextRight(int xRight, int baseY, const char* s, uint16_t color) 
 
 // Golf-TV convention: red for under par. Green for over, white for even.
 static uint16_t scoreColor(const char* score) {
-  if (score[0] == '-') return C_RED;
-  if (score[0] == '+') return C_GREEN;
-  return C_WHITE;
+  if (strcmp(score, "-") == 0) return C_GRAY;  // no data yet (placeholder dash)
+  if (score[0] == '-') return C_RED;    // under par
+  if (score[0] == '+') return C_GREEN;  // over par
+  return C_WHITE;                        // even
 }
 
 static void drawRow(const GolferRow& row, int baseY, bool pinnedStyle) {
-  drawText(POS_X, baseY, row.pos, C_GRAY);
+  // Rank hard against the left margin; the name sits right after it.
+  drawText(PAD, baseY, row.pos, C_GRAY);
+  int nameX = PAD + textWidth(row.pos) + NAME_GAP;
 
-  // Right-hand columns first, so the name knows how much room it has.
-  drawTextRight(SCORE_RIGHT, baseY, row.score, scoreColor(row.score));
-  drawTextRight(THRU_RIGHT, baseY, row.thru, C_GRAY);
+  // Right-hand columns first, so the name knows how much room it has:
+  // holes (rightmost), then total score, then this round's score.
+  drawTextRight(THRU_RIGHT,  baseY, row.thru,  C_GRAY);
+  drawTextRight(TOTAL_RIGHT, baseY, row.score, scoreColor(row.score));
+  drawTextRight(TODAY_RIGHT, baseY, row.today, scoreColor(row.today));
 
-  int scoreStartX = SCORE_RIGHT - textWidth(row.score) + 1;
-  int maxChars = (scoreStartX - 2 - NAME_X) / 4;
+  int todayStartX = TODAY_RIGHT - textWidth(row.today) + 1;
+  int maxChars = (todayStartX - 2 - nameX) / 4;
   char name[sizeof(row.name)];
   strlcpy(name, row.name, sizeof(name));
   if (maxChars >= 0 && maxChars < (int)strlen(name)) name[maxChars] = 0;
 
-  drawText(NAME_X, baseY, name, pinnedStyle ? C_CYAN : C_WHITE);
+  drawText(nameX, baseY, name, pinnedStyle ? C_CYAN : C_WHITE);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +157,7 @@ bool displayInit() {
   dma = new MatrixPanel_I2S_DMA(cfg);
   if (!dma->begin()) return false;
 
-  dma->setBrightness8(PANEL_BRIGHTNESS);
+  dma->setBrightness8(settings.brightness);
   dma->setFont(&TomThumb);
   dma->setTextWrap(false);
   dma->clearScreen();
@@ -164,6 +171,10 @@ bool displayInit() {
   C_CYAN   = dma->color565(0, 210, 255);
   C_ORANGE = dma->color565(255, 130, 0);
   return true;
+}
+
+void displaySetBrightness(uint8_t b) {
+  if (dma) dma->setBrightness8(b);
 }
 
 void displayMessage(const char* l1, const char* l2, const char* l3) {
@@ -210,21 +221,21 @@ static void wrapTwoLines(const char* src, char* l1, char* l2) {
 
 // MODE_NEXT: what's coming up, and whether the pinned golfers are playing.
 static void renderNext(const Leaderboard& lb) {
-  drawText(0, HEADER_BASE, "NEXT UP", C_YELLOW);
-  dma->drawFastHLine(0, HEADER_RULE_Y, PANEL_WIDTH, C_DIM);
+  drawText(PAD, HEADER_BASE, "NEXT UP", C_YELLOW);
+  dma->drawFastHLine(PAD, HEADER_RULE_Y, PANEL_WIDTH - 2 * PAD, C_DIM);
 
   char l1[17], l2[17];
   wrapTwoLines(lb.nextName, l1, l2);
-  drawText(0, 15, l1, C_WHITE);
-  if (l2[0]) drawText(0, 21, l2, C_WHITE);
-  drawText(0, 29, lb.nextDates, C_GRAY);
+  drawText(PAD, 16, l1, C_WHITE);
+  if (l2[0]) drawText(PAD, 22, l2, C_WHITE);
+  drawText(PAD, 30, lb.nextDates, C_GRAY);
 
   if (lb.nextGolferCount > 0) {
-    dma->drawFastHLine(0, 34, PANEL_WIDTH, C_DIM);
+    dma->drawFastHLine(PAD, 35, PANEL_WIDTH - 2 * PAD, C_DIM);
     for (int i = 0; i < lb.nextGolferCount; i++) {
       const NextGolfer& g = lb.nextGolfers[i];
-      int baseY = 42 + i * ROW_PITCH;
-      drawText(0, baseY, g.name, C_CYAN);
+      int baseY = 43 + i * ROW_PITCH;
+      drawText(PAD, baseY, g.name, C_CYAN);
       uint16_t c = C_GRAY;                        // TBD: field not out yet
       if (strcmp(g.status, "IN") == 0) c = C_GREEN;
       else if (strcmp(g.status, "OUT") == 0) c = C_ORANGE;
@@ -238,20 +249,20 @@ static void renderLive(const Leaderboard& lb) {
 
   // Header: tournament name (truncated to leave room for the round label).
   int labelW = textWidth(lb.roundLabel);
-  int nameBudget = (PANEL_WIDTH - 1 - labelW - 3 - 0) / 4;
+  int nameBudget = (PANEL_WIDTH - 2 * PAD - labelW - 3) / 4;
   char header[sizeof(lb.eventName)];
   strlcpy(header, lb.eventName, sizeof(header));
   if (nameBudget >= 0 && nameBudget < (int)strlen(header)) header[nameBudget] = 0;
-  drawText(0, HEADER_BASE, header, C_YELLOW);
-  drawTextRight(PANEL_WIDTH - 1, HEADER_BASE, lb.roundLabel, C_WHITE);
-  dma->drawFastHLine(0, HEADER_RULE_Y, PANEL_WIDTH, C_DIM);
+  drawText(PAD, HEADER_BASE, header, C_YELLOW);
+  drawTextRight(PANEL_WIDTH - 1 - PAD, HEADER_BASE, lb.roundLabel, C_WHITE);
+  dma->drawFastHLine(PAD, HEADER_RULE_Y, PANEL_WIDTH - 2 * PAD, C_DIM);
 
   for (int i = 0; i < lb.leaderCount; i++) {
     drawRow(lb.leaders[i], LEADER_BASE0 + i * ROW_PITCH, false);
   }
 
   if (lb.pinnedCount > 0) {
-    dma->drawFastHLine(0, PINNED_RULE_Y, PANEL_WIDTH, C_DIM);
+    dma->drawFastHLine(PAD, PINNED_RULE_Y, PANEL_WIDTH - 2 * PAD, C_DIM);
     for (int i = 0; i < lb.pinnedCount; i++) {
       drawRow(lb.pinned[i], PINNED_BASE0 + i * ROW_PITCH, true);
     }
@@ -273,7 +284,7 @@ void displayLeaderboard(const Leaderboard& lb, bool fetchOk) {
 
   // Status dot, bottom-right: green = fresh data, red = last refresh failed.
   uint16_t dot = fetchOk ? dma->color565(0, 160, 0) : dma->color565(200, 0, 0);
-  dma->fillRect(PANEL_WIDTH - 2, PANEL_HEIGHT - 2, 2, 2, dot);
+  dma->fillRect(PANEL_WIDTH - 2 - PAD, PANEL_HEIGHT - 2 - PAD, 2, 2, dot);
 }
 
 void displayPowerOff() {
