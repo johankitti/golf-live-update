@@ -21,12 +21,18 @@
 #define RETRY_INTERVAL_MS       (30UL * 1000UL)         // 30 seconds
 
 // How many leaders to show at the top of the board.
-#define LEADER_COUNT 5
+#define LEADER_COUNT 6
+
+// Debug: render a fake live leaderboard instead of fetching from ESPN. Handy
+// for tweaking the live-scoreboard layout when no tournament is in progress.
+// Set to 1, flash, and the board shows the fixture in loadDebugLeaderboard()
+// (src/leaderboard.cpp) immediately — no network. Set back to 0 for normal use.
+#define DEBUG_FAKE_LIVE 0
 
 // Extra golfers to always show below the leaders (max 3 fit on the panel).
 // Matched case-insensitively against the player's full name, with accents
 // folded to ASCII — so "aberg" matches "Ludvig Åberg".
-// A pinned golfer already in the top 5 is not shown twice.
+// A pinned golfer already among the leaders is not shown twice.
 static const char* const PINNED_GOLFERS[] = {
     "Aberg",
     "Noren",   // matches "Alex Norén" (accents folded: é -> e)
