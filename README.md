@@ -92,7 +92,10 @@ All pins are configurable in [`include/config.h`](include/config.h).
   5 V pin or USB port can supply.
 - Connect **PSU GND ↔ panel GND ↔ ESP32 GND** (common ground, always).
 - The dev board itself can run off USB, or off the same PSU's 5 V into its 5V pin.
-- At the default brightness (90/255) the panel draws well under 2 A.
+- The default brightness is a conservative **20/255** — dim enough to be safe on
+  USB while bench-testing. Turn it up (from the [web settings page](#-web-settings-page)
+  or `PANEL_BRIGHTNESS` in `config.h`) once the panel is on the external supply;
+  even at ~90/255 it stays well under 2 A.
 
 ---
 
@@ -122,6 +125,10 @@ All pins are configurable in [`include/config.h`](include/config.h).
    };
    ```
 
+   > This is just the **first-boot default** — once the board is running you can
+   > change the tracked golfers (and brightness, and night hours) from the
+   > [web settings page](#-web-settings-page) without reflashing.
+
 4. **Build & flash** (board connected over USB):
 
    ```bash
@@ -137,20 +144,48 @@ every 5 minutes (configurable via `UPDATE_INTERVAL_MS`).
 
 ## 📶 First-boot Wi-Fi setup
 
-No credentials are compiled in — you set the network with your phone:
+No credentials are compiled in — you set the network with your phone
+(handled by [WiFiManager](https://github.com/tzapu/WiFiManager)):
 
-1. On a fresh board the panel shows **`SETUP? / TAP BOOT`** for ~3 seconds, then
-   (if no network is saved) starts a Wi-Fi hotspot called **`GolfBoard-setup`**.
-   The panel shows **`WIFI SETUP / JOIN WIFI / GolfBoard-setup`**.
+1. On a fresh board the panel shows **`WIFI`** while it tries to connect. With no
+   saved network it starts a Wi-Fi hotspot called **`GolfBoard-setup`** and the
+   panel switches to **`WIFI SETUP / JOIN WIFI / GolfBoard-setup`**.
 2. Join that hotspot on your phone — a captive-portal page opens automatically.
    Pick your Wi-Fi network, enter the password, save.
 3. The board stores the credentials on-device (survives reflashing the app) and
    reconnects on its own. No `secrets.h` edit, no rebuild.
 
-**To change networks later:** power-cycle the board and **tap the onboard `BOOT`
-button** while it shows `SETUP? / TAP BOOT` — that re-opens the hotspot even if a
-network is already saved. The hotspot name is `WIFI_SETUP_AP_NAME` in
-[`include/config.h`](include/config.h).
+**To change networks later:** open the [settings page](#-web-settings-page) and
+press **Reconfigure Wi-Fi** — the board wipes the saved network and re-opens the
+`GolfBoard-setup` hotspot, so a boxed unit needs no physical buttons. The hotspot
+name is `WIFI_SETUP_AP_NAME` in [`include/config.h`](include/config.h).
+
+---
+
+## 🌐 Web settings page
+
+Once the board is on your network it serves a small settings page — no app, just a
+browser. Open **[`http://golfboard.local/`](http://golfboard.local/)** (mDNS) or
+the board's IP address (printed to the serial log, and shown on the page itself).
+
+From there you can, without reflashing:
+
+- **Brightness** — 0–255 slider, applied to the panel immediately on save.
+- **Night mode** — toggle it and set the from/to hours (see below).
+- **Tracked golfers** — up to 3 surnames to pin below the leaders.
+- **Refresh now** — force an immediate re-fetch instead of waiting for the timer.
+- **Restart** the board, or **Reconfigure Wi-Fi** (re-opens the setup hotspot).
+
+The page also shows live status: the current event/round (or next event), the
+board's IP, Wi-Fi signal strength, and uptime.
+
+> **Where settings live.** The values in [`include/config.h`](include/config.h)
+> (brightness, pinned golfers, night hours) are only the **first-boot defaults**.
+> The moment you save from the web page they're written to the ESP32's NVS flash
+> and become the source of truth — they persist across reboots *and* reflashes.
+> Editing `config.h` afterward won't change a device that already has saved
+> settings; use the web page, or erase NVS (`pio run -t erase`) to fall back to
+> the config defaults.
 
 ---
 
@@ -207,8 +242,10 @@ flowchart LR
   available. Idle refresh slows to 30 min to be polite.
 - **No clock needed:** time comes from the HTTP `Date` response header,
   so there's no NTP dependency. It also sets the internal clock for the night schedule.
-- **Night schedule:** between 01:00 and 07:00 (Swedish time — all configurable in
-  `config.h`) the panel blanks and the whole device deep-sleeps at µA levels, waking
+- **Night schedule:** between 01:00 and 07:00 (Swedish time — hours, on/off and the
+  timezone come from `config.h`, and the hours and on/off toggle are also editable
+  live from the [web settings page](#-web-settings-page)) the panel blanks and the
+  whole device deep-sleeps at µA levels, waking
   itself in the morning. The HUB75 output-enable line is parked and held through
   sleep so the panel can't light stray pixels. Disable with `NIGHT_MODE_ENABLED false`.
   Heads-up: US West Coast tournaments run until ~02:00–03:00 Swedish time, so widen
