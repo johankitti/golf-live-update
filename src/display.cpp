@@ -16,11 +16,11 @@ static const int HEADER_BASE   = 6;   // baselines shifted +1 vs. edge for 1px t
 static const int HEADER_RULE_Y = 8;
 static const int LEADER_BASE0  = 15;  // first leader row baseline
 static const int ROW_PITCH     = 6;
-static const int PINNED_RULE_Y = 43;
-static const int PINNED_BASE0  = 50;  // 2px gap below the divider, matching the header rule
+static const int PINNED_RULE_Y = 47;  // 1 empty row below the 6th leader (baseline 45)
+static const int PINNED_BASE0  = 54;  // 2px gap below the divider, matching the header rule
 static const int NAME_GAP      = 2;   // gap between the left-aligned rank and the name
-static const int TODAY_RIGHT   = 41;  // this round's score, right edge
-static const int TOTAL_RIGHT   = 53;  // total score, right edge
+static const int TODAY_RIGHT   = 42;  // this round's score, right edge
+static const int TOTAL_RIGHT   = 54;  // total score, right edge
 static const int THRU_RIGHT    = 62;  // holes played (thru), rightmost; also "NEXT UP" status
 
 // Colors (initialised in displayInit, after the driver exists)
@@ -52,7 +52,7 @@ static uint16_t scoreColor(const char* score) {
   return C_WHITE;                        // even
 }
 
-static void drawRow(const GolferRow& row, int baseY, bool pinnedStyle) {
+static void drawRow(const GolferRow& row, int baseY) {
   // Rank hard against the left margin; the name sits right after it.
   drawText(PAD, baseY, row.pos, C_GRAY);
   int nameX = PAD + textWidth(row.pos) + NAME_GAP;
@@ -69,7 +69,7 @@ static void drawRow(const GolferRow& row, int baseY, bool pinnedStyle) {
   strlcpy(name, row.name, sizeof(name));
   if (maxChars >= 0 && maxChars < (int)strlen(name)) name[maxChars] = 0;
 
-  drawText(nameX, baseY, name, pinnedStyle ? C_CYAN : C_WHITE);
+  drawText(nameX, baseY, name, row.selected ? C_CYAN : C_WHITE);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,13 +258,13 @@ static void renderLive(const Leaderboard& lb) {
   dma->drawFastHLine(PAD, HEADER_RULE_Y, PANEL_WIDTH - 2 * PAD, C_DIM);
 
   for (int i = 0; i < lb.leaderCount; i++) {
-    drawRow(lb.leaders[i], LEADER_BASE0 + i * ROW_PITCH, false);
+    drawRow(lb.leaders[i], LEADER_BASE0 + i * ROW_PITCH);
   }
 
   if (lb.pinnedCount > 0) {
     dma->drawFastHLine(PAD, PINNED_RULE_Y, PANEL_WIDTH - 2 * PAD, C_DIM);
     for (int i = 0; i < lb.pinnedCount; i++) {
-      drawRow(lb.pinned[i], PINNED_BASE0 + i * ROW_PITCH, true);
+      drawRow(lb.pinned[i], PINNED_BASE0 + i * ROW_PITCH);
     }
   }
 }
@@ -281,10 +281,7 @@ void displayLeaderboard(const Leaderboard& lb, bool fetchOk) {
       drawText((PANEL_WIDTH - textWidth("SEASON OVER")) / 2, 36, "SEASON OVER", C_WHITE);
       break;
   }
-
-  // Status dot, bottom-right: green = fresh data, red = last refresh failed.
-  uint16_t dot = fetchOk ? dma->color565(0, 160, 0) : dma->color565(200, 0, 0);
-  dma->fillRect(PANEL_WIDTH - 2 - PAD, PANEL_HEIGHT - 2 - PAD, 2, 2, dot);
+  (void)fetchOk;  // staleness indicator (the corner dot) removed for space
 }
 
 void displayPowerOff() {

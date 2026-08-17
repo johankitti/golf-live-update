@@ -12,9 +12,9 @@ void displaySetBrightness(uint8_t b);
 void displayMessage(const char* l1, const char* l2 = nullptr,
                     const char* l3 = nullptr);
 
-// Draws the leaderboard. `fetchOk` controls the little status dot in the
-// bottom-right corner: green = data is fresh, red = last refresh failed
-// (the board keeps showing the previous data).
+// Draws the leaderboard. `fetchOk` is currently unused (it used to drive a
+// small fresh/stale status dot in the corner, since removed); kept in the
+// signature so a staleness indicator can be reintroduced without churn.
 void displayLeaderboard(const Leaderboard& lb, bool fetchOk);
 
 // Animated loading screen (rolling golf ball) with a status line, e.g.

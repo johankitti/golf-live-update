@@ -3,8 +3,8 @@
 #include <Arduino.h>
 #include "config.h"
 
-// Up to 3 pinned golfers fit below the top-5 on a 64px-tall panel.
-#define MAX_PINNED_ROWS 3
+// Up to 2 pinned golfers fit below the six leaders on a 64px-tall panel.
+#define MAX_PINNED_ROWS 2
 
 enum BoardMode : uint8_t {
   MODE_NONE,  // nothing on the calendar (deep off-season)
@@ -18,6 +18,7 @@ struct GolferRow {
   char today[6];  // this round's score to par: "-2", "+1", "E"
   char score[6];  // total to par: "-14", "+2", "E"
   char thru[4];   // holes played this round: "12", "F" (finished), "-" (not started)
+  bool selected = false;  // one of the user's pinned golfers -> name highlighted anywhere
 };
 
 // Pinned golfer's status for the upcoming event.
@@ -47,3 +48,7 @@ struct Leaderboard {
 // Fetches ESPN's scoreboard and fills `out`. Returns false on any
 // network/parse error (in which case `out` is left untouched).
 bool fetchLeaderboard(Leaderboard& out);
+
+// Fills `out` with a synthetic MODE_LIVE leaderboard for display iteration
+// (no network). Used by main.cpp when DEBUG_FAKE_LIVE is set in config.h.
+void loadDebugLeaderboard(Leaderboard& out);

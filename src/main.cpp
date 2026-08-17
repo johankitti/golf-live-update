@@ -182,8 +182,14 @@ void loop() {
   if (millis() - lastAttemptMs >= nextDelayMs || nextDelayMs == 0) {
     lastAttemptMs = millis();
 
+#if DEBUG_FAKE_LIVE
+    Serial.println("[debug] DEBUG_FAKE_LIVE: loading fake live leaderboard");
+    loadDebugLeaderboard(board);
+    lastFetchOk = true;
+#else
     Serial.println("[espn] fetching leaderboard...");
     lastFetchOk = fetchLeaderboard(board);
+#endif
     // The fetch synced the clock — if it's actually night, sleep before
     // lighting the panel (matters after a cold boot at 3 a.m.).
     if (isNight()) sleepUntilMorning();

@@ -317,15 +317,19 @@ static void fillLive(Leaderboard& lb, JsonObjectConst event) {
 
   // Competitors arrive sorted by leaderboard order: the first LEADER_COUNT
   // are the leaders; pinned golfers are picked up wherever they sit.
-  // A pinned golfer inside the top 5 is already visible and is not duplicated.
+  // A pinned golfer inside the leaders is already visible and is not duplicated.
   const uint8_t pinnedTarget =
       min((size_t)MAX_PINNED_ROWS, (size_t)settings.pinnedCount);
   for (JsonObjectConst c : comp["competitors"].as<JsonArrayConst>()) {
+    bool isPinned = matchesAnyPinned(c["athlete"]["displayName"] | "");
     if (lb.leaderCount < LEADER_COUNT) {
-      fillRow(lb.leaders[lb.leaderCount++], c, compState, period);
-    } else if (lb.pinnedCount < pinnedTarget &&
-               matchesAnyPinned(c["athlete"]["displayName"] | "")) {
-      fillRow(lb.pinned[lb.pinnedCount++], c, compState, period);
+      GolferRow& r = lb.leaders[lb.leaderCount++];
+      fillRow(r, c, compState, period);
+      r.selected = isPinned;  // a pick that made the top rows stays highlighted
+    } else if (lb.pinnedCount < pinnedTarget && isPinned) {
+      GolferRow& r = lb.pinned[lb.pinnedCount++];
+      fillRow(r, c, compState, period);
+      r.selected = true;
     } else if (lb.leaderCount >= LEADER_COUNT &&
                lb.pinnedCount >= pinnedTarget) {
       break;
@@ -343,6 +347,7 @@ static void fillLive(Leaderboard& lb, JsonObjectConst event) {
 // ---------------------------------------------------------------------------
 
 static void fillNext(Leaderboard& lb, const JsonDocument& doc, time_t now,
+                     time_t completedStart,
                      ArduinoJson::Allocator* allocator) {
   lb.mode = MODE_NEXT;
 
@@ -350,10 +355,19 @@ static void fillNext(Leaderboard& lb, const JsonDocument& doc, time_t now,
   // approximate "now" with the currently listed event's date.
   if (now == 0) now = parseIsoDate(doc["events"][0]["date"] | "");
 
-  // First calendar entry that hasn't finished yet is the next (or current,
-  // pre-round) tournament.
+  // Pick the current-or-next tournament from the season calendar.
+  //
+  // `completedStart` is the start date of the event ESPN currently reports as
+  // finished ("post"), or 0 if none. A tournament's calendar endDate is a UTC
+  // timestamp that rolls a day past the final round, and parseIsoDate keeps
+  // only the date part — so a purely date-based "has it ended?" test lingers a
+  // day or two after the trophy is lifted. We instead trust ESPN's own state
+  // and skip the just-finished event (and anything before it) outright. The
+  // endDate test stays as a fallback for when the feed has no completed event.
   const char* startIso = nullptr;
   for (JsonObjectConst c : doc["leagues"][0]["calendar"].as<JsonArrayConst>()) {
+    time_t start = parseIsoDate(c["startDate"] | "");
+    if (completedStart != 0 && start != 0 && start <= completedStart) continue;
     time_t end = parseIsoDate(c["endDate"] | "");
     if (end == 0 || end + 86400 <= now) continue;
     asciiFold(c["label"] | "PGA TOUR", lb.nextName, sizeof(lb.nextName));
@@ -451,13 +465,20 @@ bool fetchLeaderboard(Leaderboard& out) {
   time_t now = 0;
   if (!getJson(ESPN_SCOREBOARD_URL, doc, filter, &now)) return false;
 
-  // A tournament round in progress wins; otherwise show what's next.
+  // A tournament round in progress wins; otherwise show what's next. While
+  // scanning, note the latest event ESPN reports as finished ("post") so the
+  // "next" screen can skip a tournament that just ended (see fillNext).
   JsonObjectConst liveEvent;
+  time_t completedStart = 0;
   for (JsonObjectConst ev : doc["events"].as<JsonArrayConst>()) {
     const char* st = ev["competitions"][0]["status"]["type"]["state"] | "";
     if (strcmp(st, "in") == 0) {
       liveEvent = ev;
       break;
+    }
+    if (strcmp(st, "post") == 0) {
+      time_t s = parseIsoDate(ev["date"] | "");
+      if (s > completedStart) completedStart = s;
     }
   }
 
@@ -465,9 +486,53 @@ bool fetchLeaderboard(Leaderboard& out) {
   if (!liveEvent.isNull()) {
     fillLive(lb, liveEvent);
   } else {
-    fillNext(lb, doc, now, &allocator);
+    fillNext(lb, doc, now, completedStart, &allocator);
   }
 
   out = lb;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Debug fixture: a synthetic live leaderboard for iterating on the display
+// without waiting for a real tournament. Enabled via DEBUG_FAKE_LIVE in
+// config.h; main.cpp loads this instead of fetching. Edit the rows below to
+// try different names, scores and "thru" states against renderLive/drawRow.
+// ---------------------------------------------------------------------------
+
+static void setRow(GolferRow& r, const char* pos, const char* name,
+                   const char* today, const char* score, const char* thru) {
+  strlcpy(r.pos, pos, sizeof(r.pos));
+  strlcpy(r.name, name, sizeof(r.name));
+  strlcpy(r.today, today, sizeof(r.today));
+  strlcpy(r.score, score, sizeof(r.score));
+  strlcpy(r.thru, thru, sizeof(r.thru));
+}
+
+void loadDebugLeaderboard(Leaderboard& out) {
+  Leaderboard lb;
+  lb.mode = MODE_LIVE;
+  strlcpy(lb.eventName, "BMW CHAMPIONSHIP", sizeof(lb.eventName));
+  strlcpy(lb.roundLabel, "R2", sizeof(lb.roundLabel));
+
+  // Top 6 — mixes solo/tied ranks, under/over/even scores, and every "thru"
+  // state (finished, mid-round, not yet started), plus a highlighted pick.
+  //          pos    name         today  total  thru
+  setRow(lb.leaders[0], "1",   "SCHEFFLER", "-5", "-15", "F");
+  setRow(lb.leaders[1], "T2",  "MCILROY",   "-3", "-12", "F");
+  setRow(lb.leaders[2], "T2",  "HENLEY",    "-4", "-12", "16");
+  setRow(lb.leaders[3], "4",   "MORIKAWA",  "-4", "-10", "12");
+  setRow(lb.leaders[4], "5",   "ABERG",     "-3", "-9",  "13");
+  lb.leaders[4].selected = true;  // Åberg is a pick -> stays highlighted up here
+  setRow(lb.leaders[5], "6",   "FLEETWOOD", "-1", "-8",  "7");
+  lb.leaderCount = 6;
+
+  // Pinned golfers below the divider. Åberg isn't repeated here: he's already
+  // among the leaders above, the same de-dup the live feed does when a pinned
+  // golfer sits inside the top rows.
+  setRow(lb.pinned[0], "T21", "NOREN", "+2", "-1", "9");
+  lb.pinned[0].selected = true;
+  lb.pinnedCount = 1;
+
+  out = lb;
 }
