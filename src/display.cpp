@@ -15,13 +15,10 @@ static const int PAD           = 1;   // 1px margin around all content
 static const int HEADER_BASE   = 6;   // baselines shifted +1 vs. edge for 1px top padding
 static const int HEADER_RULE_Y = 8;
 static const int LEADER_BASE0  = 15;  // first leader row baseline
-static const int ROW_PITCH     = 6;
-static const int PINNED_RULE_Y = 47;  // 1 empty row below the 6th leader (baseline 45)
-static const int PINNED_BASE0  = 54;  // 2px gap below the divider, matching the header rule
-static const int NAME_GAP      = 2;   // gap between the left-aligned rank and the name
-static const int TODAY_RIGHT   = 42;  // this round's score, right edge
-static const int TOTAL_RIGHT   = 54;  // total score, right edge
-static const int THRU_RIGHT    = 62;  // holes played (thru), rightmost; also "NEXT UP" status
+static const int ROW_PITCH     = 6;   // up to 8 rows fit: baselines 15..57
+static const int COL_GAP       = 1;   // 1px between every column
+static const int NAME_GAP      = COL_GAP;
+static const int TOTAL_RIGHT   = PANEL_WIDTH - 1 - PAD;  // far-right edge: total; also "NEXT UP" status
 
 // Colors (initialised in displayInit, after the driver exists)
 static uint16_t C_WHITE, C_GRAY, C_DIM, C_YELLOW, C_RED, C_GREEN, C_CYAN,
@@ -52,19 +49,56 @@ static uint16_t scoreColor(const char* score) {
   return C_WHITE;                        // even
 }
 
+// Right-hand columns are each sized to their widest possible value and packed
+// against the right edge with a 1px gap; the name flexes into the space left.
+// Widths depend only on the (fixed) font, so the edges are computed once.
+//   L→R:  NAME (flex) · thru(holes) · today(round score) · total  [far right]
+struct ColLayout {
+  int thruR, todayR, totalR;  // right edges (right-aligned text)
+  int thruLeft;               // reserved left edge of the leftmost column
+};
+
+static const ColLayout& columns() {
+  static ColLayout L;
+  static bool ready = false;
+  if (!ready) {
+    int totalW = textWidth("-15");  // widest total to par (e.g. "-15", "+10")
+    int todayW = textWidth("-15");  // widest single-round to par
+    int thruW  = textWidth("18");   // widest holes-played ("17", then "F")
+    L.totalR = TOTAL_RIGHT;
+    L.todayR = L.totalR - totalW - COL_GAP;
+    L.thruR  = L.todayR - todayW - COL_GAP;
+    L.thruLeft = L.thruR - thruW + 1;
+    ready = true;
+  }
+  return L;
+}
+
 static void drawRow(const GolferRow& row, int baseY) {
+  const ColLayout& L = columns();
+
   // Rank hard against the left margin; the name sits right after it.
   drawText(PAD, baseY, row.pos, C_GRAY);
   int nameX = PAD + textWidth(row.pos) + NAME_GAP;
 
-  // Right-hand columns first, so the name knows how much room it has:
-  // holes (rightmost), then total score, then this round's score.
-  drawTextRight(THRU_RIGHT,  baseY, row.thru,  C_GRAY);
-  drawTextRight(TOTAL_RIGHT, baseY, row.score, scoreColor(row.score));
-  drawTextRight(TODAY_RIGHT, baseY, row.today, scoreColor(row.today));
+  // Total (to par) is always the far-right column.
+  drawTextRight(L.totalR, baseY, row.score, scoreColor(row.score));
 
-  int todayStartX = TODAY_RIGHT - textWidth(row.today) + 1;
-  int maxChars = (todayStartX - 2 - nameX) / 4;
+  int nameRight;  // last x the name may use
+  if (row.tee[0]) {
+    // Yet to tee off: the tee time (gray, so it reads as status) fills the
+    // holes + round-score columns; the total score stays on the right.
+    drawTextRight(L.todayR, baseY, row.tee, C_GRAY);
+    nameRight = (L.todayR - textWidth(row.tee) + 1) - COL_GAP;
+  } else {
+    // Playing / finished: holes played (left), then this round's score. Name
+    // clips at the reserved column edge so rows stay vertically aligned.
+    drawTextRight(L.todayR, baseY, row.today, scoreColor(row.today));
+    drawTextRight(L.thruR,  baseY, row.thru,  C_GRAY);
+    nameRight = L.thruLeft - COL_GAP;
+  }
+
+  int maxChars = (nameRight - nameX + 1) / 4;
   char name[sizeof(row.name)];
   strlcpy(name, row.name, sizeof(name));
   if (maxChars >= 0 && maxChars < (int)strlen(name)) name[maxChars] = 0;
@@ -239,7 +273,7 @@ static void renderNext(const Leaderboard& lb) {
       uint16_t c = C_GRAY;                        // TBD: field not out yet
       if (strcmp(g.status, "IN") == 0) c = C_GREEN;
       else if (strcmp(g.status, "OUT") == 0) c = C_ORANGE;
-      drawTextRight(THRU_RIGHT, baseY, g.status, c);
+      drawTextRight(TOTAL_RIGHT, baseY, g.status, c);
     }
   }
 }
@@ -262,9 +296,15 @@ static void renderLive(const Leaderboard& lb) {
   }
 
   if (lb.pinnedCount > 0) {
-    dma->drawFastHLine(PAD, PINNED_RULE_Y, PANEL_WIDTH - 2 * PAD, C_DIM);
+    // Divider sits 2px below the last leader; the pinned block follows with the
+    // same breathing room as the header rule. The leader count is dynamic, so
+    // these are derived from it rather than fixed (6 leaders -> rule at 47).
+    int lastLeaderBase = LEADER_BASE0 + (lb.leaderCount - 1) * ROW_PITCH;
+    int pinnedRuleY = lastLeaderBase + 2;
+    int pinnedBase0 = pinnedRuleY + 7;
+    dma->drawFastHLine(PAD, pinnedRuleY, PANEL_WIDTH - 2 * PAD, C_DIM);
     for (int i = 0; i < lb.pinnedCount; i++) {
-      drawRow(lb.pinned[i], PINNED_BASE0 + i * ROW_PITCH);
+      drawRow(lb.pinned[i], pinnedBase0 + i * ROW_PITCH);
     }
   }
 }
