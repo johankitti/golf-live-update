@@ -20,8 +20,11 @@
 #define IDLE_UPDATE_INTERVAL_MS (30UL * 60UL * 1000UL)  // 30 minutes (no event)
 #define RETRY_INTERVAL_MS       (30UL * 1000UL)         // 30 seconds
 
-// How many leaders to show at the top of the board.
-#define LEADER_COUNT 6
+// Total golfers on the live board. Leaders fill the top; any tracked golfers
+// sitting outside the top take the bottom rows (see MAX_PINNED_ROWS). 8 is the
+// panel max. The leader block grows to keep the board full when fewer picks
+// are pinned below.
+#define BOARD_ROWS 8
 
 // Debug: render a fake live leaderboard instead of fetching from ESPN. Handy
 // for tweaking the live-scoreboard layout when no tournament is in progress.

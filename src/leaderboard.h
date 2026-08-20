@@ -3,7 +3,8 @@
 #include <Arduino.h>
 #include "config.h"
 
-// Up to 2 pinned golfers fit below the six leaders on a 64px-tall panel.
+// Up to 2 tracked golfers who sit outside the top can be pinned to the bottom
+// rows on a 64px-tall panel; the leader block fills whatever rows remain.
 #define MAX_PINNED_ROWS 2
 
 enum BoardMode : uint8_t {
@@ -18,6 +19,7 @@ struct GolferRow {
   char today[6];  // this round's score to par: "-2", "+1", "E"
   char score[6];  // total to par: "-14", "+2", "E"
   char thru[4];   // holes played this round: "12", "F" (finished), "-" (not started)
+  char tee[6];    // local tee time "HH:MM" when yet to start today; "" otherwise
   bool selected = false;  // one of the user's pinned golfers -> name highlighted anywhere
 };
 
@@ -33,7 +35,7 @@ struct Leaderboard {
   // MODE_LIVE
   char eventName[40];   // tournament name, ASCII-folded + uppercased
   char roundLabel[6];   // "R1".."R4"
-  GolferRow leaders[LEADER_COUNT];
+  GolferRow leaders[BOARD_ROWS];
   uint8_t leaderCount = 0;
   GolferRow pinned[MAX_PINNED_ROWS];
   uint8_t pinnedCount = 0;

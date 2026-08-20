@@ -174,6 +174,42 @@ static void formatDateRange(const char* startIso, const char* endIso,
   }
 }
 
+// Tee times on the scoreboard feed arrive as a Java Date.toString() in the
+// tournament's US timezone, e.g. "Thu Aug 20 14:55:00 PDT 2026". Look up the
+// zone's UTC offset so the time can be re-expressed in the board's local zone.
+static bool zoneOffsetSeconds(const char* z, long* off) {
+  static const struct { const char* abbr; long off; } ZONES[] = {
+      {"UTC", 0},         {"GMT", 0},
+      {"EST", -5 * 3600}, {"EDT", -4 * 3600},
+      {"CST", -6 * 3600}, {"CDT", -5 * 3600},
+      {"MST", -7 * 3600}, {"MDT", -6 * 3600},
+      {"PST", -8 * 3600}, {"PDT", -7 * 3600},
+  };
+  for (const auto& e : ZONES) {
+    if (strcmp(z, e.abbr) == 0) { *off = e.off; return true; }
+  }
+  return false;  // unknown zone (e.g. an overseas event) -> caller falls back
+}
+
+// "Thu Aug 20 14:55:00 PDT 2026" -> local "HH:MM" (TZ is set in main.cpp).
+// Returns false if the format or timezone can't be parsed.
+static bool parseTeeTime(const char* s, char* out, size_t outSize) {
+  if (!s || !*s) return false;
+  char mon[4] = {0}, zone[6] = {0};
+  int d, hh, mm, ss, y;
+  if (sscanf(s, "%*s %3s %d %d:%d:%d %5s %d", mon, &d, &hh, &mm, &ss, zone,
+             &y) != 7)
+    return false;
+  int m = monthIndex(mon);
+  long off;
+  if (m < 0 || !zoneOffsetSeconds(zone, &off)) return false;
+  time_t utc = utcEpoch(y, m + 1, d, hh, mm, ss) - off;  // local -> UTC
+  struct tm lt;
+  localtime_r(&utc, &lt);  // UTC -> board-local wall clock
+  snprintf(out, outSize, "%02d:%02d", lt.tm_hour, lt.tm_min);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP: fetch a URL and filter-parse it. Optionally reports the server's
 // clock (from the Date header) via nowUtc.
@@ -258,6 +294,36 @@ static bool getJson(const char* url, JsonDocument& doc,
 // MODE_LIVE: leaderboard rows
 // ---------------------------------------------------------------------------
 
+// This feed carries no competitor.status/position, so leaderboard positions
+// (with ties: T1, T1, T3 ...) are derived from total score to par.
+static const int SCORE_NONE = 100000;  // "-"/no score: ranks last, ties nobody
+
+static int scoreStrToPar(const char* s) {
+  if (!s || !*s || strcmp(s, "-") == 0) return SCORE_NONE;
+  if (strcmp(s, "E") == 0) return 0;
+  return atoi(s);  // handles "+2", "-14"
+}
+
+static int scoreToPar(JsonVariantConst sv) {
+  if (sv.is<const char*>()) return scoreStrToPar(sv.as<const char*>());
+  if (sv.isNull()) return SCORE_NONE;
+  return sv.as<int>();
+}
+
+// Position = 1 + (players strictly better), "T"-prefixed when the score is
+// shared. `scores` is every competitor's parsed total, in leaderboard order.
+static void assignPosition(GolferRow& r, const int* scores, int n) {
+  int mine = scoreStrToPar(r.score);
+  if (mine == SCORE_NONE) return;  // keep fillRow's sort-order fallback
+  int better = 0, equal = 0;
+  for (int i = 0; i < n; i++) {
+    if (scores[i] < mine) better++;
+    else if (scores[i] == mine) equal++;
+  }
+  if (equal > 1) snprintf(r.pos, sizeof(r.pos), "T%d", better + 1);
+  else snprintf(r.pos, sizeof(r.pos), "%d", better + 1);
+}
+
 static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
                     int period) {
   // Position: live events carry "T5"-style strings; finished events don't,
@@ -289,6 +355,7 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
   // length is the reliable "thru".
   strlcpy(row.today, "-", sizeof(row.today));
   strlcpy(row.thru, "-", sizeof(row.thru));
+  row.tee[0] = 0;
   for (JsonObjectConst ls : c["linescores"].as<JsonArrayConst>()) {
     if ((int)(ls["period"] | 0) != period) continue;
     const char* tv = ls["displayValue"];
@@ -298,6 +365,14 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
       strlcpy(row.thru, "F", sizeof(row.thru));
     } else if (holes > 0) {
       snprintf(row.thru, sizeof(row.thru), "%d", holes);
+    } else {
+      // Yet to tee off today: surface the round's tee time (a positional,
+      // unlabelled stat, so accept the first stat that parses as one).
+      for (JsonObjectConst st :
+           ls["statistics"]["categories"][0]["stats"].as<JsonArrayConst>()) {
+        if (parseTeeTime(st["displayValue"] | "", row.tee, sizeof(row.tee)))
+          break;
+      }
     }
     break;
   }
@@ -315,25 +390,56 @@ static void fillLive(Leaderboard& lb, JsonObjectConst event) {
   int period = comp["status"]["period"] | 1;
   snprintf(lb.roundLabel, sizeof(lb.roundLabel), "R%d", period > 0 ? period : 1);
 
-  // Competitors arrive sorted by leaderboard order: the first LEADER_COUNT
-  // are the leaders; pinned golfers are picked up wherever they sit.
-  // A pinned golfer inside the leaders is already visible and is not duplicated.
-  const uint8_t pinnedTarget =
-      min((size_t)MAX_PINNED_ROWS, (size_t)settings.pinnedCount);
-  for (JsonObjectConst c : comp["competitors"].as<JsonArrayConst>()) {
+  // Competitors arrive sorted by leaderboard order. The board holds BOARD_ROWS
+  // golfers: the top of the leaderboard, plus any tracked golfers who sit
+  // outside it pinned to the bottom rows (so a pick is always visible). A pick
+  // already inside the leaders is shown there, highlighted, not duplicated.
+  //
+  // The leader block grows to fill whatever rows the pinned picks don't use, so
+  // the board is always full. That count is circular (how many leaders fit
+  // depends on how many picks are pinned, which depends on where the leader
+  // block ends), so settle it with a short fixed-point pass: with L leaders,
+  // a pick is "pinned" only if it ranks at index >= L.
+  JsonArrayConst competitors = comp["competitors"].as<JsonArrayConst>();
+
+  // Parse the whole field's totals once, for tie-aware positions (see below).
+  static int scores[160];
+  int nScores = 0;
+  for (JsonObjectConst c : competitors) {
+    if (nScores >= (int)(sizeof(scores) / sizeof(scores[0]))) break;
+    scores[nScores++] = scoreToPar(c["score"]);
+  }
+
+  uint8_t leaderSlots = BOARD_ROWS, pinnedSlots = 0;
+  for (uint8_t iter = 0; iter <= MAX_PINNED_ROWS; iter++) {
+    uint8_t deep = 0;
+    int idx = 0;
+    for (JsonObjectConst c : competitors) {
+      if (idx >= leaderSlots &&
+          matchesAnyPinned(c["athlete"]["displayName"] | "")) {
+        if (deep < MAX_PINNED_ROWS) deep++;
+      }
+      idx++;
+    }
+    if (deep == pinnedSlots) break;
+    pinnedSlots = deep;
+    leaderSlots = BOARD_ROWS - deep;
+  }
+
+  for (JsonObjectConst c : competitors) {
     bool isPinned = matchesAnyPinned(c["athlete"]["displayName"] | "");
-    if (lb.leaderCount < LEADER_COUNT) {
+    if (lb.leaderCount < leaderSlots) {
       GolferRow& r = lb.leaders[lb.leaderCount++];
       fillRow(r, c, compState, period);
-      r.selected = isPinned;  // a pick that made the top rows stays highlighted
-    } else if (lb.pinnedCount < pinnedTarget && isPinned) {
+      assignPosition(r, scores, nScores);
+      r.selected = isPinned;  // a pick among the top rows stays highlighted
+    } else if (isPinned && lb.pinnedCount < pinnedSlots) {
       GolferRow& r = lb.pinned[lb.pinnedCount++];
       fillRow(r, c, compState, period);
+      assignPosition(r, scores, nScores);
       r.selected = true;
-    } else if (lb.leaderCount >= LEADER_COUNT &&
-               lb.pinnedCount >= pinnedTarget) {
-      break;
     }
+    if (lb.leaderCount >= leaderSlots && lb.pinnedCount >= pinnedSlots) break;
   }
 }
 
@@ -454,6 +560,9 @@ bool fetchLeaderboard(Leaderboard& out) {
   fLine["period"] = true;
   fLine["displayValue"] = true;
   fLine["linescores"].add<JsonObject>()["period"] = true;  // per-hole, for counting thru
+  // Round statistics carry the tee time (unlabelled) for players yet to start.
+  fLine["statistics"]["categories"].add<JsonObject>()["stats"].add<JsonObject>()
+      ["displayValue"] = true;
   // Season calendar, for the "next tournament" screen.
   JsonObject fCal = filter["leagues"].add<JsonObject>()["calendar"].add<JsonObject>();
   fCal["label"] = true;
@@ -507,6 +616,7 @@ static void setRow(GolferRow& r, const char* pos, const char* name,
   strlcpy(r.today, today, sizeof(r.today));
   strlcpy(r.score, score, sizeof(r.score));
   strlcpy(r.thru, thru, sizeof(r.thru));
+  r.tee[0] = 0;
 }
 
 void loadDebugLeaderboard(Leaderboard& out) {
@@ -515,8 +625,9 @@ void loadDebugLeaderboard(Leaderboard& out) {
   strlcpy(lb.eventName, "BMW CHAMPIONSHIP", sizeof(lb.eventName));
   strlcpy(lb.roundLabel, "R2", sizeof(lb.roundLabel));
 
-  // Top 6 — mixes solo/tied ranks, under/over/even scores, and every "thru"
-  // state (finished, mid-round, not yet started), plus a highlighted pick.
+  // Top 7 — mixes solo/tied ranks, under/over/even scores, and every "thru"
+  // state (finished, mid-round, not yet started), plus a highlighted pick. The
+  // leader block grew to 7 because only one pick sits below (see MAX_PINNED_ROWS).
   //          pos    name         today  total  thru
   setRow(lb.leaders[0], "1",   "SCHEFFLER", "-5", "-15", "F");
   setRow(lb.leaders[1], "T2",  "MCILROY",   "-3", "-12", "F");
@@ -525,7 +636,9 @@ void loadDebugLeaderboard(Leaderboard& out) {
   setRow(lb.leaders[4], "5",   "ABERG",     "-3", "-9",  "13");
   lb.leaders[4].selected = true;  // Åberg is a pick -> stays highlighted up here
   setRow(lb.leaders[5], "6",   "FLEETWOOD", "-1", "-8",  "7");
-  lb.leaderCount = 6;
+  setRow(lb.leaders[6], "T7",  "THOMAS",    "-",  "-7",  "-");  // yet to tee off
+  strlcpy(lb.leaders[6].tee, "13:20", sizeof(lb.leaders[6].tee));
+  lb.leaderCount = 7;
 
   // Pinned golfers below the divider. Åberg isn't repeated here: he's already
   // among the leaders above, the same de-dup the live feed does when a pinned
