@@ -77,6 +77,21 @@ static const ColLayout& columns() {
 static void drawRow(const GolferRow& row, int baseY) {
   const ColLayout& L = columns();
 
+  // Out of the tournament (cut/withdrawn/DQ): orange badge in the rank column,
+  // total still on the right, the per-round columns left blank. The name flexes
+  // into the freed space so the row reads "MC  ABERG            -1".
+  if (row.out) {
+    drawText(PAD, baseY, row.pos, C_ORANGE);
+    int nameX = PAD + textWidth(row.pos) + NAME_GAP;
+    drawTextRight(L.totalR, baseY, row.score, scoreColor(row.score));
+    int maxChars = (L.todayR - nameX + 1) / 4;
+    char name[sizeof(row.name)];
+    strlcpy(name, row.name, sizeof(name));
+    if (maxChars >= 0 && maxChars < (int)strlen(name)) name[maxChars] = 0;
+    drawText(nameX, baseY, name, row.selected ? C_CYAN : C_WHITE);
+    return;
+  }
+
   // Rank hard against the left margin; the name sits right after it.
   drawText(PAD, baseY, row.pos, C_GRAY);
   int nameX = PAD + textWidth(row.pos) + NAME_GAP;
@@ -122,19 +137,47 @@ static const int FLAG_X     = 50;
 
 static volatile bool animRun = false;
 static TaskHandle_t animTask = nullptr;
+static char sLoadingStatus[16] = "";  // current status word, e.g. "FETCHING"
+
+// Redraws the status line with `dots` trailing dots (0-3). The left edge is
+// anchored on the widest form ("WORD...") so the word doesn't jitter sideways
+// as the dots grow. Runs only on the animation task (see below), so it never
+// contends with the main task for the shared GFX text cursor.
+static void drawLoadingStatus(int dots) {
+  char full[20];
+  snprintf(full, sizeof(full), "%s...", sLoadingStatus);
+  int x = (PANEL_WIDTH - textWidth(full)) / 2;
+  if (x < 0) x = 0;
+  char shown[20];
+  snprintf(shown, sizeof(shown), "%s%.*s", sLoadingStatus, dots, "...");
+  dma->fillRect(0, 54, PANEL_WIDTH, 10, 0);
+  drawText(x, 61, shown, C_GRAY);
+}
 
 static void loadingAnimTask(void*) {
   int x = BALL_MIN_X;
+  int holdFrames = 0;           // brief pause after the ball drops in
+  int dotFrame = 0, dots = 0;   // status dots cycle 0->1->2->3 on their own beat
+  drawLoadingStatus(dots);
   while (animRun) {
     dma->fillRect(0, GROUND_Y - 3, 48, 3, 0);  // erase ball band only
-    if (x <= BALL_MAX_X) {
+    if (holdFrames > 0) {
+      holdFrames--;                              // ball in the hole: hold
+    } else if (x <= BALL_MAX_X) {
       dma->fillRect(x, GROUND_Y - 2, 2, 2, C_WHITE);
       x++;
-      vTaskDelay(pdMS_TO_TICKS(45));
     } else {
-      x = BALL_MIN_X;                 // ball dropped: pause, then tee up again
-      vTaskDelay(pdMS_TO_TICKS(500));
+      x = BALL_MIN_X;                            // tee up again after a beat
+      holdFrames = 11;                           // ~500ms at 45ms/frame
     }
+    // Advance the dots ~every 400ms, independent of the ball, so "FETCHING..."
+    // keeps animating even while the ball is paused in the hole.
+    if (++dotFrame >= 9) {
+      dotFrame = 0;
+      dots = (dots + 1) % 4;
+      drawLoadingStatus(dots);
+    }
+    vTaskDelay(pdMS_TO_TICKS(45));
   }
   animTask = nullptr;
   vTaskDelete(nullptr);
@@ -157,14 +200,14 @@ static void drawLoadingScene() {
 
 void displayLoading(const char* status) {
   if (!dma) return;
+  // Publish the status word; the animation task owns the actual text drawing
+  // (and its dot animation), so main and anim never share the GFX cursor.
+  strlcpy(sLoadingStatus, status, sizeof(sLoadingStatus));
   if (!animRun) {
     drawLoadingScene();
     animRun = true;
     xTaskCreate(loadingAnimTask, "loadanim", 4096, nullptr, 1, &animTask);
   }
-  // Status line lives below the animation band — safe to draw from here.
-  dma->fillRect(0, 54, PANEL_WIDTH, 10, 0);
-  drawText((PANEL_WIDTH - textWidth(status)) / 2, 61, status, C_GRAY);
 }
 
 void displayLoadingStop() {
