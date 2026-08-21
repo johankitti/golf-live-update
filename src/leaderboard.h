@@ -21,6 +21,8 @@ struct GolferRow {
   char thru[4];   // holes played this round: "12", "F" (finished), "-" (not started)
   char tee[6];    // local tee time "HH:MM" when yet to start today; "" otherwise
   bool selected = false;  // one of the user's pinned golfers -> name highlighted anywhere
+  bool out = false;  // cut/withdrawn/DQ -> `pos` holds a badge ("MC"/"WD"/"DQ"),
+                     // per-round columns are blank
 };
 
 // Pinned golfer's status for the upcoming event.

@@ -324,17 +324,52 @@ static void assignPosition(GolferRow& r, const int* scores, int n) {
   else snprintf(r.pos, sizeof(r.pos), "%d", better + 1);
 }
 
+// True if the competitor has a linescore entry for `period`. Players still in
+// the field get one (even a bare placeholder) as soon as that round is on the
+// schedule; a cut/withdrawn player has none for rounds they won't play.
+static bool hasLinescoreForPeriod(JsonObjectConst c, int period) {
+  for (JsonObjectConst ls : c["linescores"].as<JsonArrayConst>())
+    if ((int)(ls["period"] | 0) == period) return true;
+  return false;
+}
+
+// Detects a player who is out of the tournament and, if so, writes a short
+// badge ("MC"/"WD"/"DQ") for the position column.
+//
+// Tier 1 — ESPN's explicit label. Only present while a round is actively in
+// progress (competitor.status is null between rounds and on Final), but it's
+// authoritative when it's there.
+//
+// Tier 2 — a structural fallback for the null-status feed. `round` is the round
+// the board is showing. Once the cut has been applied (round 3+), a player with
+// no linescore for that round isn't in it -> cut (or, less commonly, withdrawn;
+// Tier 1 catches an explicitly-labelled WD). Deliberately not attempted before
+// round 3, where a made-cut player who simply hasn't teed off looks identical.
+static bool classifyOut(JsonObjectConst c, int round, char* badge, size_t n) {
+  const char* posDisp = c["status"]["position"]["displayName"] | "";
+  const char* typeName = c["status"]["type"]["name"] | "";
+  if (strstr(typeName, "WITHDRAW") || strcasecmp(posDisp, "WD") == 0) {
+    strlcpy(badge, "WD", n);
+    return true;
+  }
+  if (strstr(typeName, "DISQUALIF") || strcasecmp(posDisp, "DQ") == 0) {
+    strlcpy(badge, "DQ", n);
+    return true;
+  }
+  if (strstr(typeName, "CUT") || strcasecmp(posDisp, "CUT") == 0 ||
+      strcasecmp(posDisp, "MC") == 0) {
+    strlcpy(badge, "MC", n);
+    return true;
+  }
+  if (round >= 3 && !hasLinescoreForPeriod(c, round)) {
+    strlcpy(badge, "MC", n);  // structural: past the cut, not in the field
+    return true;
+  }
+  return false;
+}
+
 static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
                     int period) {
-  // Position: live events carry "T5"-style strings; finished events don't,
-  // so fall back to the competitor's sort order.
-  const char* posDisp = c["status"]["position"]["displayName"];
-  if (posDisp && *posDisp) {
-    strlcpy(row.pos, posDisp, sizeof(row.pos));
-  } else {
-    snprintf(row.pos, sizeof(row.pos), "%d", (int)(c["order"] | 0));
-  }
-
   surnameOf(c["athlete"]["displayName"] | "?", row.name, sizeof(row.name));
 
   // Total score to par: ESPN sends a display string ("-14", "E") but be
@@ -348,6 +383,25 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
     else snprintf(row.score, sizeof(row.score), "%+d", v);
   } else {
     strlcpy(row.score, "-", sizeof(row.score));
+  }
+
+  // Out of the tournament (cut/withdrawn/DQ): show name + total with a badge in
+  // the rank column and no per-round detail (no tee time for someone who's out).
+  if (classifyOut(c, period, row.pos, sizeof(row.pos))) {
+    row.out = true;
+    strlcpy(row.today, "-", sizeof(row.today));
+    strlcpy(row.thru, "-", sizeof(row.thru));
+    row.tee[0] = 0;
+    return;
+  }
+
+  // Position: live events carry "T5"-style strings; finished events don't,
+  // so fall back to the competitor's sort order.
+  const char* posDisp = c["status"]["position"]["displayName"];
+  if (posDisp && *posDisp) {
+    strlcpy(row.pos, posDisp, sizeof(row.pos));
+  } else {
+    snprintf(row.pos, sizeof(row.pos), "%d", (int)(c["order"] | 0));
   }
 
   // This round's score to par + holes played come from the current round's
@@ -378,6 +432,26 @@ static void fillRow(GolferRow& row, JsonObjectConst c, const char* compState,
   }
 }
 
+// Between rounds ESPN publishes the next round's tee times into that round's
+// linescore statistics only once the draw is set (a few hours after the prior
+// round ends); until then the round is a bare {"period":N} placeholder. Returns
+// true as soon as any competitor carries a parseable tee time for `period`, so
+// the board only switches to the tee-time view when there's something to show.
+static bool roundHasTeeTimes(JsonArrayConst competitors, int period) {
+  char buf[6];
+  for (JsonObjectConst c : competitors) {
+    for (JsonObjectConst ls : c["linescores"].as<JsonArrayConst>()) {
+      if ((int)(ls["period"] | 0) != period) continue;
+      for (JsonObjectConst st :
+           ls["statistics"]["categories"][0]["stats"].as<JsonArrayConst>()) {
+        if (parseTeeTime(st["displayValue"] | "", buf, sizeof(buf))) return true;
+      }
+      break;
+    }
+  }
+  return false;
+}
+
 static void fillLive(Leaderboard& lb, JsonObjectConst event) {
   lb.mode = MODE_LIVE;
 
@@ -387,8 +461,27 @@ static void fillLive(Leaderboard& lb, JsonObjectConst event) {
 
   JsonObjectConst comp = event["competitions"][0];
   const char* compState = comp["status"]["type"]["state"] | "in";
+  const char* statusName = comp["status"]["type"]["name"] | "";
   int period = comp["status"]["period"] | 1;
-  snprintf(lb.roundLabel, sizeof(lb.roundLabel), "R%d", period > 0 ? period : 1);
+  if (period < 1) period = 1;
+
+  // Between rounds the current round is complete (state "post") but the event
+  // isn't Final. Once the next round's draw is published, switch to it: the
+  // leaderboard totals are unchanged, but each row surfaces that player's next
+  // tee time instead of a flat "F". Until the tee times are out, keep showing
+  // the completed round's results (score + "F") rather than blank columns.
+  // Cap at 4 rounds; a fully-live round always shows itself.
+  int displayPeriod = period;
+  const char* rowState = compState;
+  bool betweenRounds = strcmp(compState, "post") == 0 &&
+                       strcmp(statusName, "STATUS_FINAL") != 0;
+  if (betweenRounds && period < 4 &&
+      roundHasTeeTimes(comp["competitors"].as<JsonArrayConst>(), period + 1)) {
+    displayPeriod = period + 1;
+    rowState = "pre";  // upcoming round: nobody's teed off -> tee times, not "F"
+  }
+  period = displayPeriod;
+  snprintf(lb.roundLabel, sizeof(lb.roundLabel), "R%d", period);
 
   // Competitors arrive sorted by leaderboard order. The board holds BOARD_ROWS
   // golfers: the top of the leaderboard, plus any tracked golfers who sit
@@ -430,13 +523,13 @@ static void fillLive(Leaderboard& lb, JsonObjectConst event) {
     bool isPinned = matchesAnyPinned(c["athlete"]["displayName"] | "");
     if (lb.leaderCount < leaderSlots) {
       GolferRow& r = lb.leaders[lb.leaderCount++];
-      fillRow(r, c, compState, period);
-      assignPosition(r, scores, nScores);
+      fillRow(r, c, rowState, period);
+      if (!r.out) assignPosition(r, scores, nScores);
       r.selected = isPinned;  // a pick among the top rows stays highlighted
     } else if (isPinned && lb.pinnedCount < pinnedSlots) {
       GolferRow& r = lb.pinned[lb.pinnedCount++];
-      fillRow(r, c, compState, period);
-      assignPosition(r, scores, nScores);
+      fillRow(r, c, rowState, period);
+      if (!r.out) assignPosition(r, scores, nScores);
       r.selected = true;
     }
     if (lb.leaderCount >= leaderSlots && lb.pinnedCount >= pinnedSlots) break;
@@ -545,12 +638,14 @@ bool fetchLeaderboard(Leaderboard& out) {
   JsonObject fComp = fEvent["competitions"].add<JsonObject>();
   fComp["status"]["period"] = true;
   fComp["status"]["type"]["state"] = true;
+  fComp["status"]["type"]["name"] = true;  // STATUS_FINAL vs STATUS_PLAY_COMPLETE
   JsonObject fc = fComp["competitors"].add<JsonObject>();
   fc["order"] = true;
   fc["score"] = true;
   fc["athlete"]["displayName"] = true;
   fc["status"]["thru"] = true;
   fc["status"]["type"]["state"] = true;
+  fc["status"]["type"]["name"] = true;  // STATUS_CUT / STATUS_WITHDRAWN (when live)
   fc["status"]["position"]["displayName"] = true;
   // Per-round linescores: today's score to par (displayValue), and holes
   // played via the nested per-hole array (competitor.status is null on this
@@ -574,18 +669,25 @@ bool fetchLeaderboard(Leaderboard& out) {
   time_t now = 0;
   if (!getJson(ESPN_SCOREBOARD_URL, doc, filter, &now)) return false;
 
-  // A tournament round in progress wins; otherwise show what's next. While
-  // scanning, note the latest event ESPN reports as finished ("post") so the
-  // "next" screen can skip a tournament that just ended (see fillNext).
+  // A tournament that's underway wins; otherwise show what's next. ESPN models
+  // a whole tournament as one event, so "underway" is broader than a round
+  // actively being played ("in"): between rounds the event reports state "post"
+  // with type STATUS_PLAY_COMPLETE ("Round 1 - Play Complete"), which is still a
+  // live tournament — only STATUS_FINAL means the trophy's been lifted. So an
+  // event is live while a round is in progress OR a round is done but the event
+  // isn't Final. While scanning, note the latest genuinely-finished (Final)
+  // event so the "next" screen can skip a tournament that just ended (fillNext).
   JsonObjectConst liveEvent;
   time_t completedStart = 0;
   for (JsonObjectConst ev : doc["events"].as<JsonArrayConst>()) {
-    const char* st = ev["competitions"][0]["status"]["type"]["state"] | "";
-    if (strcmp(st, "in") == 0) {
+    JsonObjectConst type = ev["competitions"][0]["status"]["type"];
+    const char* st = type["state"] | "";
+    bool isFinal = strcmp(type["name"] | "", "STATUS_FINAL") == 0;
+    if (strcmp(st, "in") == 0 || (strcmp(st, "post") == 0 && !isFinal)) {
       liveEvent = ev;
       break;
     }
-    if (strcmp(st, "post") == 0) {
+    if (strcmp(st, "post") == 0) {  // STATUS_FINAL: note it so fillNext skips it
       time_t s = parseIsoDate(ev["date"] | "");
       if (s > completedStart) completedStart = s;
     }
@@ -643,7 +745,12 @@ void loadDebugLeaderboard(Leaderboard& out) {
   // Pinned golfers below the divider. Åberg isn't repeated here: he's already
   // among the leaders above, the same de-dup the live feed does when a pinned
   // golfer sits inside the top rows.
-  setRow(lb.pinned[0], "T21", "NOREN", "+2", "-1", "9");
+  //
+  // Norén demonstrates an out-of-tournament pick: the "MC" badge (orange) sits
+  // in the rank column, the total stays, and the per-round columns are blank.
+  // Swap "MC" for "WD"/"DQ" to preview those, or clear `out` for the normal row.
+  setRow(lb.pinned[0], "MC", "NOREN", "-", "-1", "-");
+  lb.pinned[0].out = true;
   lb.pinned[0].selected = true;
   lb.pinnedCount = 1;
 
